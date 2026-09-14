@@ -12,13 +12,41 @@ internal static class WindowsControl
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
     public static string ActiveWindowTitle()
     {
         var handle = GetForegroundWindow();
         if (handle == IntPtr.Zero) return "nenhuma janela";
-        var title = new StringBuilder(512);
-        GetWindowText(handle, title, title.Capacity);
-        return string.IsNullOrWhiteSpace(title.ToString()) ? "janela sem título" : title.ToString();
+        return WindowTitle(handle);
+    }
+
+    public static bool ActivateExistingBrowserWindow()
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+            var title = WindowTitle(hWnd);
+            var normalized = Normalize(title);
+            if (Has(normalized, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi"))
+            {
+                found = hWnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return found != IntPtr.Zero && SetForegroundWindow(found);
     }
 
     public static LunaResult TypeText(string text)
@@ -78,6 +106,22 @@ internal static class WindowsControl
             return new($"Não consegui pressionar {key}: {ex.Message}");
         }
     }
+
+    private static string WindowTitle(IntPtr hWnd)
+    {
+        var title = new StringBuilder(512);
+        GetWindowText(hWnd, title, title.Capacity);
+        return string.IsNullOrWhiteSpace(title.ToString()) ? "janela sem título" : title.ToString();
+    }
+
+    private static string Normalize(string value)
+    {
+        var form = value.ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
+        var chars = form.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark);
+        return new string(chars.ToArray()).Normalize(System.Text.NormalizationForm.FormC);
+    }
+
+    private static bool Has(string text, params string[] terms) => terms.Any(text.Contains);
 
     private static string EscapeForSendKeys(string text)
     {
