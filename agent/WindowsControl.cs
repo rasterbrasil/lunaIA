@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
@@ -22,12 +23,9 @@ internal static class WindowsControl
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
 
     public static string ActiveWindowTitle()
     {
@@ -45,7 +43,6 @@ internal static class WindowsControl
     {
         var normalized = Normalize(title);
         if (!IsBrowserWindowTitle(title)) return false;
-
         return Has(normalized,
             "new tab", "nova guia", "new tab page", "pagina nova", "start page", "pagina inicial",
             "chrome new tab", "google chrome new tab", "google chrome nova guia",
@@ -54,70 +51,74 @@ internal static class WindowsControl
             "new tab - microsoft edge", "nova guia - microsoft edge");
     }
 
-    public static bool ActivateExistingBlankBrowserWindow()
+    public static bool TryActivateBrowserWindow(bool blankOnly = false)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hWnd, _) =>
         {
             if (!IsWindowVisible(hWnd)) return true;
             var title = WindowTitle(hWnd);
-            if (IsBlankBrowserWindowTitle(title))
-            {
-                found = hWnd;
-                return false;
-            }
-            return true;
+            if (!IsBrowserWindowHandle(hWnd)) return true;
+            if (blankOnly && !IsBlankBrowserWindowTitle(title)) return true;
+            found = hWnd;
+            return false;
         }, IntPtr.Zero);
-
         return found != IntPtr.Zero && SetForegroundWindow(found);
     }
 
-    public static bool ActivateExistingBrowserWindow()
+    public static bool ActivateExistingBlankBrowserWindow() => TryActivateBrowserWindow(true);
+
+    public static bool ActivateExistingBrowserWindow() => TryActivateBrowserWindow(false);
+
+    public static string FindBrowserWindowTitle(bool blankOnly = false)
     {
-        IntPtr found = IntPtr.Zero;
+        string found = string.Empty;
         EnumWindows((hWnd, _) =>
         {
             if (!IsWindowVisible(hWnd)) return true;
             var title = WindowTitle(hWnd);
-            if (IsBrowserWindowTitle(title))
-            {
-                found = hWnd;
-                return false;
-            }
-            return true;
+            if (!IsBrowserWindowHandle(hWnd)) return true;
+            if (blankOnly && !IsBlankBrowserWindowTitle(title)) return true;
+            found = title;
+            return false;
         }, IntPtr.Zero);
-
-        return found != IntPtr.Zero && SetForegroundWindow(found);
+        return found;
     }
 
     public static LunaResult OpenNewBrowserWindow()
     {
         try
         {
-            var title = ActiveWindowTitle();
-            if (!IsBrowserWindowTitle(title)) return new("A janela ativa não é um navegador.");
-            var result = PressKey("ctrl+n");
-            if (!result.Executed) return result;
-            Thread.Sleep(700);
-            return new("Abri uma nova janela do navegador para não interromper a página que já estava em uso.", true);
+            var activeTitle = ActiveWindowTitle();
+            if (IsBrowserWindowTitle(activeTitle))
+            {
+                var result = PressKey("ctrl+n");
+                if (!result.Executed) return result;
+                Thread.Sleep(900);
+                return new("Abri uma nova janela do navegador sem interromper a página que já estava em uso.", true);
+            }
+
+            if (TryStartBrowserExecutable("chrome.exe", "--new-window about:blank") ||
+                TryStartBrowserExecutable("msedge.exe", "--new-window about:blank"))
+            {
+                Thread.Sleep(1200);
+                return new("Abri uma nova janela independente do navegador.", true);
+            }
+
+            return new("Não consegui abrir uma nova janela independente do navegador.");
         }
         catch (Exception ex) { return new($"Não consegui abrir uma nova janela do navegador: {ex.Message}"); }
     }
 
     public static LunaResult TypeText(string text)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            return new("Não recebi nenhum texto para digitar.");
-
+        if (string.IsNullOrWhiteSpace(text)) return new("Não recebi nenhum texto para digitar.");
         try
         {
             SendKeys.SendWait(EscapeForSendKeys(text));
             return new($"Digitei o texto na janela ativa: {ActiveWindowTitle()}.", true);
         }
-        catch (Exception ex)
-        {
-            return new($"Não consegui digitar na janela ativa: {ex.Message}");
-        }
+        catch (Exception ex) { return new($"Não consegui digitar na janela ativa: {ex.Message}"); }
     }
 
     public static LunaResult PressKey(string key)
@@ -149,19 +150,59 @@ internal static class WindowsControl
             "alt+tab" => "%{TAB}",
             _ => string.Empty
         };
-
-        if (string.IsNullOrEmpty(mapped))
-            return new($"Ainda não conheço a tecla ou atalho '{key}'.");
-
+        if (string.IsNullOrEmpty(mapped)) return new($"Ainda não conheço a tecla ou atalho '{key}'.");
         try
         {
             SendKeys.SendWait(mapped);
             return new($"Pressionei {key} na janela ativa: {ActiveWindowTitle()}.", true);
         }
-        catch (Exception ex)
+        catch (Exception ex) { return new($"Não consegui pressionar {key}: {ex.Message}"); }
+    }
+
+    private static bool IsBrowserWindowHandle(IntPtr hWnd)
+    {
+        try
         {
-            return new($"Não consegui pressionar {key}: {ex.Message}");
+            GetWindowThreadProcessId(hWnd, out var processId);
+            if (processId == 0) return false;
+            using var process = Process.GetProcessById((int)processId);
+            var name = process.ProcessName;
+            return Has(Normalize(name), "chrome", "msedge", "firefox", "opera", "brave", "vivaldi");
         }
+        catch { return IsBrowserWindowTitle(WindowTitle(hWnd)); }
+    }
+
+    private static bool TryStartBrowserExecutable(string executable, string arguments)
+    {
+        try
+        {
+            var candidates = executable.Equals("chrome.exe", StringComparison.OrdinalIgnoreCase)
+                ? new[]
+                {
+                    executable,
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", executable),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", executable),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", executable)
+                }
+                : new[]
+                {
+                    executable,
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", executable),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", executable)
+                };
+            foreach (var candidate in candidates)
+            {
+                if (candidate.Contains(Path.DirectorySeparatorChar) && !File.Exists(candidate)) continue;
+                try
+                {
+                    var process = Process.Start(new ProcessStartInfo { FileName = candidate, Arguments = arguments, UseShellExecute = true });
+                    if (process is not null) return true;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return false;
     }
 
     private static string WindowTitle(IntPtr hWnd)
@@ -187,8 +228,7 @@ internal static class WindowsControl
         {
             if (ch is '+' or '^' or '%' or '~' or '(' or ')' or '{' or '}' or '[' or ']')
                 builder.Append('{').Append(ch).Append('}');
-            else
-                builder.Append(ch);
+            else builder.Append(ch);
         }
         return builder.ToString();
     }
