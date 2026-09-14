@@ -9,31 +9,35 @@ internal sealed record LunaResult(string Text, bool Executed = false);
 internal sealed class LunaCore : IDisposable
 {
     private readonly LunaMemory _memory = new();
+    private readonly LunaPlanner _planner = new();
     private bool _disposed;
 
     public async Task<LunaResult> ProcessAsync(string input)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(LunaCore));
-        await Task.Yield();
 
         var text = input.Trim();
-        var n = Normalize(text);
+        if (string.IsNullOrWhiteSpace(text))
+            return new("Estou ouvindo. Diga o que você quer que eu faça.");
+
         _memory.Remember(text);
 
-        // Planejamento inicial: executa pedidos compostos em ordem, sem depender de frases exatas.
+        // O cérebro agora passa pedidos compostos pelo planejador real:
+        // objetivo -> etapas -> execução -> resultado de cada etapa.
         var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
             .Select(p => p.Trim())
             .Where(p => p.Length > 0)
             .ToArray();
+
         if (parts.Length > 1)
         {
-            var results = new List<LunaResult>();
-            foreach (var part in parts)
-                results.Add(await ProcessSingleAsync(part));
+            var steps = parts.Select((part, index) => new LunaStep(
+                $"step-{index + 1}",
+                $"Etapa {index + 1}: {part}",
+                () => ProcessSingleAsync(part))).ToList();
 
-            var executed = results.Any(r => r.Executed);
-            var summary = string.Join(" ", results.Select(r => r.Text));
-            return new($"Plano concluído. {summary}", executed);
+            var plan = _planner.CreatePlan(text, steps);
+            return await _planner.ExecuteAsync(plan);
         }
 
         return await ProcessSingleAsync(text);
@@ -41,6 +45,7 @@ internal sealed class LunaCore : IDisposable
 
     private async Task<LunaResult> ProcessSingleAsync(string text)
     {
+        await Task.Yield();
         var n = Normalize(text);
 
         if (Has(n, "quem e voce", "o que voce e"))
@@ -48,7 +53,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite"))
             return new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando.");
         if (Has(n, "como voce esta"))
-            return new("Estou funcionando normalmente. Já consigo interpretar alguns pedidos e executar ações locais no Windows.");
+            return new("Estou funcionando normalmente. Já consigo interpretar pedidos, criar planos simples e executar ações locais no Windows.");
         if (Has(n, "que horas", "hora agora"))
             return new($"Agora são {DateTime.Now:HH:mm}.");
         if (Has(n, "que dia", "data de hoje", "hoje e"))
@@ -58,17 +63,14 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "memoria"))
             return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
 
-        // Olhos: captura local da tela, sem enviar a imagem para a nuvem.
         if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela"))
             return ScreenVision.Capture();
 
-        // Mãos: abrir aplicativos e pastas.
         if (Has(n, "bloco de notas", "notepad"))
             return Open("notepad.exe", null, "Abrindo o Bloco de Notas.");
         if (Has(n, "calculadora", "calculator", "calc"))
             return Open("calc.exe", null, "Abrindo a Calculadora.");
 
-        // Navegação web: primeiro tenta o navegador pedido; depois usa o navegador padrão do Windows.
         if (Has(n, "chrome", "google chrome"))
             return OpenBrowser("https://www.google.com", "Abrindo o Chrome.", preferChrome: true);
         if (Has(n, "edge", "microsoft edge"))
@@ -81,7 +83,6 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "youtube")) return OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube.");
         if (Has(n, "google")) return OpenBrowser("https://www.google.com/", "Abrindo o Google.");
 
-        // Pesquisa: "pesquise X" abre a pesquisa no navegador.
         var search = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pesquise|pesquisar|procure|procurar|busque|buscar)\s+(.+)$", RegexOptions.IgnoreCase);
         if (search.Success)
         {
@@ -89,7 +90,6 @@ internal sealed class LunaCore : IDisposable
             return OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(query), $"Pesquisando por: {query}.");
         }
 
-        // Mãos de teclado: digitar texto na janela que estiver ativa.
         var type = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:digite|escreva|escrever)\s+(.+)$", RegexOptions.IgnoreCase);
         if (type.Success)
             return WindowsControl.TypeText(type.Groups[1].Value.Trim());
@@ -98,7 +98,6 @@ internal sealed class LunaCore : IDisposable
         if (key.Success)
             return WindowsControl.PressKey(key.Groups[1].Value.Trim());
 
-        // Atalhos úteis expressos naturalmente.
         if (Has(n, "nova aba", "nova guia")) return WindowsControl.PressKey("ctrl+t");
         if (Has(n, "selecionar tudo")) return WindowsControl.PressKey("ctrl+a");
         if (Has(n, "copiar")) return WindowsControl.PressKey("ctrl+c");
@@ -113,19 +112,14 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Já consigo planejar pedidos simples em sequência, executar ações locais e capturar a tela sem enviar a imagem para a nuvem. O próximo nível é interpretar visualmente a tela e verificar cada etapa automaticamente.");
+        return new("Entendi sua mensagem e a guardei na memória. Posso criar planos simples para pedidos em sequência e executar cada etapa localmente. O próximo nível é verificar automaticamente o resultado de cada ação e usar visão para decidir a próxima etapa.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
     {
         try
         {
-            var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = fileOrFolder,
-                Arguments = arguments ?? string.Empty,
-                UseShellExecute = true
-            });
+            var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true });
             return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true);
         }
         catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
@@ -137,41 +131,22 @@ internal sealed class LunaCore : IDisposable
         {
             if (preferChrome && TryStartChrome(url)) return new(success, true);
             if (preferEdge && TryStartEdge(url)) return new(success, true);
-
-            // explorer.exe usa o mecanismo padrão do Windows e não depende de PATH do navegador.
             if (TryStart("explorer.exe", url)) return new(success, true);
-
-            // Último recurso: associação de protocolo diretamente pelo Windows.
             if (TryStart("rundll32.exe", $"url.dll,FileProtocolHandler \"{url}\"")) return new(success, true);
-
             return new("Não consegui abrir o navegador padrão deste computador.");
         }
-        catch (Exception ex)
-        {
-            return new($"Não consegui abrir o navegador: {ex.Message}");
-        }
+        catch (Exception ex) { return new($"Não consegui abrir o navegador: {ex.Message}"); }
     }
 
     private static bool TryStartChrome(string url)
     {
-        var candidates = new[]
-        {
-            "chrome.exe",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
-        };
+        var candidates = new[] { "chrome.exe", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") };
         return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
     }
 
     private static bool TryStartEdge(string url)
     {
-        var candidates = new[]
-        {
-            "msedge.exe",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe")
-        };
+        var candidates = new[] { "msedge.exe", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe") };
         return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
     }
 
@@ -189,12 +164,7 @@ internal sealed class LunaCore : IDisposable
     {
         try
         {
-            var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = file,
-                Arguments = arguments,
-                UseShellExecute = true
-            });
+            var process = Process.Start(new ProcessStartInfo { FileName = file, Arguments = arguments, UseShellExecute = true });
             return process is not null;
         }
         catch { return false; }
@@ -229,12 +199,7 @@ internal sealed class LunaMemory : IDisposable
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LunaPC", "memory");
         Directory.CreateDirectory(dir);
         _file = Path.Combine(dir, "conversation.json");
-        try
-        {
-            if (File.Exists(_file))
-                _messages.AddRange(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_file))?.TakeLast(500) ?? []);
-        }
-        catch { }
+        try { if (File.Exists(_file)) _messages.AddRange(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_file))?.TakeLast(500) ?? []); } catch { }
     }
 
     public void Remember(string message)
