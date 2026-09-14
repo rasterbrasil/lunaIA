@@ -17,16 +17,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Restore
-        run: dotnet restore agent/LunaPC.csproj
+
+      - name: Restore for win-x64
+        run: dotnet restore agent/LunaPC.csproj -r win-x64
+
       - name: Build
         run: dotnet build agent/LunaPC.csproj -c Release --no-restore
+
       - name: Publish self-contained Windows app
         run: dotnet publish agent/LunaPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o publish --no-restore
+
       - name: Verify executable
         shell: pwsh
         run: |
@@ -34,16 +39,19 @@ jobs:
           $size = (Get-Item 'publish/LunaIA.exe').Length
           if ($size -lt 1000000) { throw "LunaIA.exe parece inválido: $size bytes." }
           Write-Host "LunaIA.exe validado: $size bytes"
+
       - name: Package
         shell: pwsh
         run: |
           if (Test-Path 'LunaIA-win-x64.zip') { Remove-Item 'LunaIA-win-x64.zip' -Force }
           Compress-Archive -Path 'publish/LunaIA.exe' -DestinationPath 'LunaIA-win-x64.zip' -CompressionLevel Optimal
+
       - name: Verify package
         shell: pwsh
         run: |
           if (-not (Test-Path 'LunaIA-win-x64.zip')) { throw 'Pacote ZIP não foi criado.' }
           Write-Host "Pacote criado: $((Get-Item 'LunaIA-win-x64.zip').Length) bytes"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
