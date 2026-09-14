@@ -72,9 +72,8 @@ if (-not (Test-Path $piperExe)) {
     $foundPiper = Get-ChildItem -Path $extractDir -Filter "piper.exe" -Recurse | Select-Object -First 1
     if (-not $foundPiper) { throw "Não encontrei piper.exe dentro do pacote baixado." }
 
-    Copy-Item $foundPiper.FullName $piperDir -Force
-    $nativeDir = Join-Path $foundPiper.Directory.FullName "piper_phonemize"
-    if (Test-Path $nativeDir) { Copy-Item $nativeDir $piperDir -Recurse -Force }
+    # O Piper precisa do executável e das DLLs/recursos que vêm junto no diretório.
+    Copy-Item (Join-Path $foundPiper.Directory.FullName "*") $piperDir -Recurse -Force
 
     Remove-Item $extractDir -Recurse -Force
     Remove-Item $piperZip -Force -ErrorAction SilentlyContinue
