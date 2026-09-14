@@ -45,7 +45,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         _speech.Volume = 100;
         _brain = new AiBrain();
 
-        _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — Assistente" };
+        _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Falar com a LUNA", null, (_, _) => StartListening());
         menu.Items.Add("Modo de teste por texto", null, (_, _) => ShowTextTest());
@@ -59,7 +59,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         if (!RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, ModControl | ModAlt, VkL))
             Speak("LUNA PC iniciada. Não consegui registrar o atalho global Ctrl Alt L.");
         else
-            Speak("LUNA PC iniciada. Estou aqui, Marcos.");
+            Speak("LUNA PC iniciada. Meu cérebro local está pronto para funcionar sem internet assim que o motor local estiver instalado.");
         EnableStartup();
     }
 
@@ -67,7 +67,7 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     private void ShowTextTest()
     {
-        using var form = new TextCommandForm(HandleCommand, Speak);
+        using var form = new TextCommandForm(HandleCommand);
         form.ShowDialog();
     }
 
@@ -114,36 +114,47 @@ internal sealed class LunaAgentContext : ApplicationContext
     {
         var command = text.Trim().ToLowerInvariant();
         if (ContainsAny(command, "quem é você", "quem e voce", "o que você é", "o que voce e"))
-        { Speak("Eu sou a LUNA PC. Estou começando a ganhar voz, ouvidos e, nas próximas etapas, mãos para controlar este computador."); return; }
+        { Speak("Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro está sendo construído para rodar localmente no seu computador, sem depender de uma API de terceiros."); return; }
         if (ContainsAny(command, "abra o chrome", "abrir o chrome", "abre o chrome", "abra chrome"))
         { if (TryStart("chrome.exe")) Speak("Abrindo o Chrome."); else Speak("Não encontrei o Chrome instalado neste computador."); return; }
         if (ContainsAny(command, "abra meu github", "abrir meu github", "abre meu github", "abra o github"))
-        { OpenUrl("https://github.com/rasterbrasil/lunaIA"); Speak("Abrindo o GitHub da LUNA PC."); return; }
+        { OpenUrl("https://github.com/rasterbrasil/lunaIA"); Speak("Abrindo o GitHub da LUNA PC. Essa ação precisa de internet."); return; }
         _ = AskBrainAsync(text);
     }
 
     private async Task AskBrainAsync(string text)
     {
-        if (!_brain.IsConfigured) { Speak($"Entendi: {text}. Meu cérebro de IA ainda não está conectado neste computador. A base já está pronta; falta configurar a chave da API com segurança."); return; }
-        try { var answer = await _brain.AskAsync(text); Speak(string.IsNullOrWhiteSpace(answer) ? "Não consegui obter uma resposta do meu cérebro de IA." : answer); }
-        catch { Speak("Não consegui falar com meu cérebro de IA agora."); }
+        try
+        {
+            var answer = await _brain.AskAsync(text);
+            Speak(string.IsNullOrWhiteSpace(answer) ? "Meu cérebro local não retornou uma resposta." : answer);
+        }
+        catch
+        {
+            Speak("Não consegui falar com meu cérebro local agora.");
+        }
     }
 
     private static bool ContainsAny(string text, params string[] values) => values.Any(text.Contains);
+
     private static bool TryStart(string fileName)
     {
         try { Process.Start(new ProcessStartInfo { FileName = fileName, UseShellExecute = true }); return true; }
         catch { return false; }
     }
+
     private static void OpenUrl(string url) => Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+
     private void Speak(string text)
     {
         try { lock (_speechLock) { _speech.SpeakAsyncCancelAll(); _speech.SpeakAsync(text); } } catch { }
     }
+
     private static void EnableStartup()
     {
         try { using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true); key?.SetValue("LunaPC", $"\"{Application.ExecutablePath}\""); } catch { }
     }
+
     protected override void ExitThreadCore()
     {
         UnregisterHotKey(_hotkeyWindow.Handle, HotkeyId);
@@ -166,21 +177,20 @@ internal sealed class TextCommandForm : Form
 {
     private readonly TextBox _input;
     private readonly Action<string> _command;
-    private readonly Action<string> _speak;
 
-    public TextCommandForm(Action<string> command, Action<string> speak)
+    public TextCommandForm(Action<string> command)
     {
-        _command = command; _speak = speak;
-        Text = "LUNA PC — Modo de teste";
+        _command = command;
+        Text = "LUNA PC — Modo offline";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 560; Height = 220;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
 
-        var title = new Label { Text = "🧠 LUNA PC — Teste por texto", Left = 20, Top = 18, Width = 500, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite um comando para testar a LUNA sem microfone:", Left = 20, Top = 55, Width = 500 };
+        var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 500, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+        var info = new Label { Text = "Converse com a LUNA sem usar a internet:", Left = 20, Top = 55, Width = 500 };
         _input = new TextBox { Left = 20, Top = 82, Width = 500 };
-        _input.PlaceholderText = "Ex.: abra o Chrome";
+        _input.PlaceholderText = "Ex.: Luna, como você está?";
         var send = new Button { Text = "Enviar para a LUNA", Left = 20, Top = 120, Width = 160, Height = 34 };
         send.Click += (_, _) => Submit();
         _input.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Submit(); } };
@@ -195,6 +205,5 @@ internal sealed class TextCommandForm : Form
         if (string.IsNullOrWhiteSpace(text)) return;
         _command(text);
         _input.Clear();
-        _speak("Comando recebido.");
     }
 }
