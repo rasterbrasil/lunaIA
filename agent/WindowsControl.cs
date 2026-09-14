@@ -21,13 +21,55 @@ internal static class WindowsControl
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
 
     public static string ActiveWindowTitle()
     {
         var handle = GetForegroundWindow();
         if (handle == IntPtr.Zero) return "nenhuma janela";
         return WindowTitle(handle);
+    }
+
+    public static bool IsBrowserWindowTitle(string title)
+    {
+        return Has(Normalize(title), "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi");
+    }
+
+    public static bool IsBlankBrowserWindowTitle(string title)
+    {
+        var normalized = Normalize(title);
+        if (!IsBrowserWindowTitle(title)) return false;
+
+        return Has(normalized,
+            "new tab", "nova guia", "new tab page", "pagina nova", "start page", "pagina inicial",
+            "chrome new tab", "google chrome new tab", "google chrome nova guia",
+            "microsoft edge new tab", "microsoft edge nova guia",
+            "edge new tab", "edge nova guia", "new tab - google chrome", "nova guia - google chrome",
+            "new tab - microsoft edge", "nova guia - microsoft edge");
+    }
+
+    public static bool ActivateExistingBlankBrowserWindow()
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+            var title = WindowTitle(hWnd);
+            if (IsBlankBrowserWindowTitle(title))
+            {
+                found = hWnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return found != IntPtr.Zero && SetForegroundWindow(found);
     }
 
     public static bool ActivateExistingBrowserWindow()
@@ -37,8 +79,7 @@ internal static class WindowsControl
         {
             if (!IsWindowVisible(hWnd)) return true;
             var title = WindowTitle(hWnd);
-            var normalized = Normalize(title);
-            if (Has(normalized, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi"))
+            if (IsBrowserWindowTitle(title))
             {
                 found = hWnd;
                 return false;
@@ -47,6 +88,20 @@ internal static class WindowsControl
         }, IntPtr.Zero);
 
         return found != IntPtr.Zero && SetForegroundWindow(found);
+    }
+
+    public static LunaResult OpenNewBrowserWindow()
+    {
+        try
+        {
+            var title = ActiveWindowTitle();
+            if (!IsBrowserWindowTitle(title)) return new("A janela ativa não é um navegador.");
+            var result = PressKey("ctrl+n");
+            if (!result.Executed) return result;
+            Thread.Sleep(700);
+            return new("Abri uma nova janela do navegador para não interromper a página que já estava em uso.", true);
+        }
+        catch (Exception ex) { return new($"Não consegui abrir uma nova janela do navegador: {ex.Message}"); }
     }
 
     public static LunaResult TypeText(string text)
@@ -86,6 +141,8 @@ internal static class WindowsControl
             "pagedown" => "{PGDN}",
             "f5" => "{F5}",
             "ctrl+l" or "control+l" => "^l",
+            "ctrl+n" or "control+n" => "^n",
+            "ctrl+t" or "control+t" => "^t",
             "ctrl+c" or "control+c" => "^c",
             "ctrl+v" or "control+v" => "^v",
             "ctrl+a" or "control+a" => "^a",
