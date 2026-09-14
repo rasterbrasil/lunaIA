@@ -207,7 +207,10 @@ Princípios:
 Conhecimento local relevante:
 """ + knowledgeText;
 
-            var answer = await _language.ChatAsync(userText, systemPrompt);
+            // Local GGUF inference is CPU-heavy. Run the entire model call on a worker
+            // thread so WinForms never blocks its UI message loop while the model loads
+            // or generates tokens. The assistant window must remain responsive.
+            var answer = await Task.Run(() => _language.ChatAsync(userText, systemPrompt));
             return new(answer, false);
         }
         catch (Exception ex)
