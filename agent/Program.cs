@@ -34,6 +34,7 @@ internal sealed class LunaAgentContext : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly HotkeyWindow _hotkeyWindow;
     private readonly SpeechSynthesizer _speech;
+    private readonly AiBrain _brain;
     private readonly object _speechLock = new();
     private int _listening;
 
@@ -43,6 +44,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         _speech.SetOutputToDefaultAudioDevice();
         _speech.Rate = 0;
         _speech.Volume = 100;
+        _brain = new AiBrain();
 
         _tray = new NotifyIcon
         {
@@ -165,7 +167,28 @@ internal sealed class LunaAgentContext : ApplicationContext
             return;
         }
 
-        Speak($"Entendi: {text}. Ainda estou aprendendo a interpretar comandos com inteligência. Esta é a etapa de voz local; o cérebro de IA será conectado em seguida.");
+        _ = AskBrainAsync(text);
+    }
+
+    private async Task AskBrainAsync(string text)
+    {
+        if (!_brain.IsConfigured)
+        {
+            Speak($"Entendi: {text}. Meu cérebro de IA ainda não está conectado neste computador. A base já está pronta; falta configurar a chave da API com segurança.");
+            return;
+        }
+
+        try
+        {
+            var answer = await _brain.AskAsync(text);
+            Speak(string.IsNullOrWhiteSpace(answer)
+                ? "Não consegui obter uma resposta do meu cérebro de IA."
+                : answer);
+        }
+        catch
+        {
+            Speak("Não consegui falar com meu cérebro de IA agora.");
+        }
     }
 
     private static bool ContainsAny(string text, params string[] values) =>
