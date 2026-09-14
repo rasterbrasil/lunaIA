@@ -24,9 +24,6 @@ internal sealed class LunaCore : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
-        // LUNA receives a goal first. The autonomy layer observes the desktop,
-        // interprets each part, chooses a strategy and only then hands actions
-        // to the existing execute/verify/retry pipeline.
         var thought = _autonomy.Think(text);
         if (thought.Intents.Count > 1)
         {
@@ -109,8 +106,6 @@ internal sealed class LunaCore : IDisposable
 
     private async Task<LunaResult> OpenConfiguredProjectByVisionAsync()
     {
-        // The project is deliberately found in the GitHub page and opened by
-        // physical click. We never use the address bar as the primary shortcut.
         var terms = new[] { "lunaIA", "rasterbrasil/lunaIA", "luna IA" };
         for (var attempt = 1; attempt <= 4; attempt++)
         {
@@ -149,8 +144,8 @@ internal sealed class LunaCore : IDisposable
         await Task.Yield();
         return intent.Kind switch
         {
-            LunaIntentKind.AskIdentity => new("Eu sou a LUNA. Meu núcleo roda neste computador e estamos construindo minha inteligência por camadas, sem depender de uma API de nuvem para executar estas ações."),
-            LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando."),
+            LunaIntentKind.AskIdentity => new($"{LunaIdentity.Describe()} Esta instalação é a minha base local. Ainda estou em construção, mas meu objetivo é agir com contexto, autonomia e honestidade sobre o que consigo confirmar."),
+            LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local, minha memória e minha camada de raciocínio estão ativos."),
             LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
             LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
             LunaIntentKind.AskMemory => new($"Minha memória local contém {_memory.Count} mensagens nesta instalação."),
@@ -162,8 +157,19 @@ internal sealed class LunaCore : IDisposable
             LunaIntentKind.PressKey => WindowsControl.PressKey(intent.Value ?? string.Empty),
             LunaIntentKind.OpenFolder when intent.Target == "Downloads" => Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads."),
             LunaIntentKind.OpenFolder when intent.Target == "Documents" => Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos."),
-            _ => new("Entendi sua mensagem e a guardei na memória. A intenção foi reconhecida, mas ainda não existe uma ferramenta local para essa tarefa.")
+            _ => BuildUnknownResponse(intent)
         };
+    }
+
+    private static LunaResult BuildUnknownResponse(LunaIntent intent)
+    {
+        var knowledge = LunaKnowledge.Search(intent.RawText);
+        if (knowledge.Count > 0)
+        {
+            var answer = string.Join(" ", knowledge.Take(2).Select(k => k.Content));
+            return new($"Ainda não encontrei uma ferramenta local para executar esse objetivo. Posso, porém, usar meu conhecimento local relevante: {answer}");
+        }
+        return new("Entendi sua mensagem e a guardei na memória. A intenção foi reconhecida, mas ainda não existe uma ferramenta local confiável para essa tarefa.");
     }
 
     internal static LunaResult NavigateOrOpenBrowser(string url, string success)
@@ -173,7 +179,6 @@ internal sealed class LunaCore : IDisposable
             var activeTitle = WindowsControl.ActiveWindowTitle();
             var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            // Existing browser => preserve the window and use a new tab.
             if (activeIsBrowser)
             {
                 if (!WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
@@ -201,10 +206,8 @@ internal sealed class LunaCore : IDisposable
                     var opened = WindowsControl.OpenNewBrowserWindow();
                     if (!opened.Executed) return opened;
                     Thread.Sleep(900);
-
                     if (!WindowsControl.ActivateExistingBrowserWindow())
                         return new($"{opened.Text} Abri o navegador, mas não consegui assumir a janela dele.", true);
-
                     var browserTitle = WindowsControl.ActiveWindowTitle();
                     if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
                     {
