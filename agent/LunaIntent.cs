@@ -5,9 +5,11 @@ internal enum LunaIntentKind
     Unknown,
     OpenApplication,
     OpenWebsite,
+    OpenConfiguredProject,
     SearchWeb,
     ObserveScreen,
     CaptureScreen,
+    ClickElement,
     TypeText,
     PressKey,
     OpenFolder,
@@ -40,6 +42,12 @@ internal static class LunaIntentParser
         if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite")) return new(LunaIntentKind.Greeting, text);
         if (Has(n, "observar tela", "observe minha tela", "observe a tela", "o que esta na tela")) return new(LunaIntentKind.ObserveScreen, text);
         if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela")) return new(LunaIntentKind.CaptureScreen, text);
+
+        var click = System.Text.RegularExpressions.Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:clique|clicar|clique em|clicar em)\s+(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (click.Success) return new(LunaIntentKind.ClickElement, text, Value: click.Groups[1].Value.Trim());
+
+        if (Has(n, "entre no meu projeto", "entre no projeto", "abra meu projeto", "abrir meu projeto", "acesse meu projeto", "acessar meu projeto"))
+            return new(LunaIntentKind.OpenConfiguredProject, text, Target: "github-project");
 
         var search = System.Text.RegularExpressions.Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pesquise|pesquisar|procure|procurar|busque|buscar)\s+(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         if (search.Success) return new(LunaIntentKind.SearchWeb, text, Value: search.Groups[1].Value.Trim());
