@@ -54,6 +54,13 @@ internal static class WindowsControl
 
     public static IntPtr FindBrowserWindowHandle(bool blankOnly = false)
     {
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && IsWindowVisible(foreground) && IsBrowserWindowHandle(foreground))
+        {
+            var title = WindowTitle(foreground);
+            if (!blankOnly || IsBlankBrowserWindowTitle(title)) return foreground;
+        }
+
         IntPtr found = IntPtr.Zero;
         EnumWindows((hWnd, _) =>
         {
