@@ -42,6 +42,7 @@ internal static class WindowsControl
     public static bool IsBlankBrowserWindowTitle(string title)
     {
         var normalized = Normalize(title);
+        if (Has(normalized, "about:blank")) return true;
         if (!IsBrowserWindowTitle(title)) return false;
         return Has(normalized,
             "new tab", "nova guia", "new tab page", "pagina nova", "start page", "pagina inicial",
@@ -51,7 +52,7 @@ internal static class WindowsControl
             "new tab - microsoft edge", "nova guia - microsoft edge");
     }
 
-    public static bool TryActivateBrowserWindow(bool blankOnly = false)
+    public static IntPtr FindBrowserWindowHandle(bool blankOnly = false)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hWnd, _) =>
@@ -63,7 +64,16 @@ internal static class WindowsControl
             found = hWnd;
             return false;
         }, IntPtr.Zero);
-        return found != IntPtr.Zero && SetForegroundWindow(found);
+        return found;
+    }
+
+    public static bool ActivateWindow(IntPtr hWnd)
+        => hWnd != IntPtr.Zero && IsWindowVisible(hWnd) && SetForegroundWindow(hWnd);
+
+    public static bool TryActivateBrowserWindow(bool blankOnly = false)
+    {
+        var found = FindBrowserWindowHandle(blankOnly);
+        return ActivateWindow(found);
     }
 
     public static bool ActivateExistingBlankBrowserWindow() => TryActivateBrowserWindow(true);
@@ -72,17 +82,8 @@ internal static class WindowsControl
 
     public static string FindBrowserWindowTitle(bool blankOnly = false)
     {
-        string found = string.Empty;
-        EnumWindows((hWnd, _) =>
-        {
-            if (!IsWindowVisible(hWnd)) return true;
-            var title = WindowTitle(hWnd);
-            if (!IsBrowserWindowHandle(hWnd)) return true;
-            if (blankOnly && !IsBlankBrowserWindowTitle(title)) return true;
-            found = title;
-            return false;
-        }, IntPtr.Zero);
-        return found;
+        var handle = FindBrowserWindowHandle(blankOnly);
+        return handle == IntPtr.Zero ? string.Empty : WindowTitle(handle);
     }
 
     public static LunaResult OpenNewBrowserWindow()
@@ -95,17 +96,22 @@ internal static class WindowsControl
                 var result = PressKey("ctrl+n");
                 if (!result.Executed) return result;
                 Thread.Sleep(900);
-                return new("Abri uma nova janela do navegador sem interromper a página que já estava em uso.", true);
+                if (ActivateExistingBlankBrowserWindow())
+                    return new("Abri uma nova janela do navegador e a deixei ativa sem interromper a página em uso.", true);
+                return new("Abri uma nova janela do navegador, mas não consegui colocá-la em primeiro plano.");
             }
 
             if (TryStartBrowserExecutable("chrome.exe", "--new-window about:blank") ||
                 TryStartBrowserExecutable("msedge.exe", "--new-window about:blank"))
             {
                 Thread.Sleep(1200);
-                return new("Abri uma nova janela independente do navegador.", true);
+                if (ActivateExistingBlankBrowserWindow())
+                    return new("Abri uma nova janela independente do navegador e a deixei ativa.", true);
+                if (ActivateExistingBrowserWindow())
+                    return new("Abri uma nova janela do navegador, mas precisei ativar uma janela existente.", true);
             }
 
-            return new("Não consegui abrir uma nova janela independente do navegador.");
+            return new("Não consegui abrir e ativar uma nova janela independente do navegador.");
         }
         catch (Exception ex) { return new($"Não consegui abrir uma nova janela do navegador: {ex.Message}"); }
     }
