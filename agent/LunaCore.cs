@@ -44,16 +44,11 @@ internal sealed class LunaCore : IDisposable
         {
             if (decision.RequiresConfirmation)
                 return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
-
             result = await ExecuteToolAsync(intent, decision);
         }
-        else
-        {
-            result = await ProcessNonToolIntentAsync(intent);
-        }
+        else result = await ProcessNonToolIntentAsync(intent);
 
         if (!result.Executed) return result;
-
         var after = LunaObserver.Observe();
         var verified = await LunaVerifier.VerifyAsync(text, result);
         if (verified.Executed) return verified;
@@ -86,8 +81,7 @@ internal sealed class LunaCore : IDisposable
                 "default-browser" => "https://www.google.com/",
                 _ => null
             };
-            if (url is not null)
-                return NavigateOrOpenBrowser(url, $"Abrindo {intent.Target}.");
+            if (url is not null) return NavigateOrOpenBrowser(url, $"Abrindo {intent.Target}.");
         }
 
         if (intent.Kind == LunaIntentKind.OpenConfiguredProject)
@@ -96,7 +90,6 @@ internal sealed class LunaCore : IDisposable
             var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
             if (semanticClick.Executed)
                 return new("Encontrei o projeto pela visão semântica local, movi o cursor até ele e cliquei.", true);
-
             return NavigateOrOpenBrowser(ProjectUrl(), "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
         }
 
@@ -145,39 +138,37 @@ internal sealed class LunaCore : IDisposable
     {
         try
         {
-            var active = Normalize(WindowsControl.ActiveWindowTitle());
-            var browserActive = Has(active, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi");
+            var activeTitle = WindowsControl.ActiveWindowTitle();
+            var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            if (!browserActive)
+            // Never hijack an active browser page. If the user is on Instagram,
+            // YouTube, ChatGPT, GitHub, etc., LUNA opens a separate window.
+            if (activeIsBrowser && !WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
             {
-                browserActive = WindowsControl.ActivateExistingBrowserWindow();
-                if (browserActive)
-                    Thread.Sleep(250);
-            }
-
-            if (!browserActive)
-            {
-                // Open a blank browser first so LUNA can visibly take control of it.
-                var opened = OpenBrowser("about:blank", success);
+                var opened = WindowsControl.OpenNewBrowserWindow();
                 if (!opened.Executed) return opened;
-                Thread.Sleep(1200);
-                browserActive = WindowsControl.ActivateExistingBrowserWindow();
-                if (!browserActive)
-                    return new($"{opened.Text} O navegador abriu, mas não consegui assumir o controle visual dele.", true);
+                Thread.Sleep(700);
+            }
+            else if (!activeIsBrowser)
+            {
+                // A blank browser window may already exist elsewhere. Reuse it;
+                // otherwise create a new browser window.
+                if (!WindowsControl.ActivateExistingBlankBrowserWindow())
+                {
+                    var opened = OpenBrowser("about:blank", success);
+                    if (!opened.Executed) return opened;
+                    Thread.Sleep(1200);
+                    if (!WindowsControl.ActivateExistingBlankBrowserWindow())
+                        return new($"{opened.Text} O navegador abriu, mas não consegui assumir uma janela em branco.", true);
+                }
             }
 
             var addressClick = LunaSemanticVision.ClickByNames(
-                "Address and search bar",
-                "Address bar",
-                "Search or enter address",
-                "Barra de endereços",
-                "Barra de endereço",
-                "Pesquisar ou inserir endereço",
+                "Address and search bar", "Address bar", "Search or enter address",
+                "Barra de endereços", "Barra de endereço", "Pesquisar ou inserir endereço",
                 "Pesquisar ou digitar endereço");
-
             if (!addressClick.Executed)
             {
-                // Fallback only when browser accessibility does not expose the address bar.
                 var address = WindowsControl.PressKey("ctrl+l");
                 if (!address.Executed) return address;
             }
@@ -187,7 +178,7 @@ internal sealed class LunaCore : IDisposable
             if (!typed.Executed) return typed;
             var enter = WindowsControl.PressKey("enter");
             return enter.Executed
-                ? new(success + " Mudei o cursor até a barra de endereço e naveguei pela janela do navegador existente.", true)
+                ? new($"{success} Usei uma janela apropriada do navegador sem interromper outra página em uso.", true)
                 : enter;
         }
         catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
