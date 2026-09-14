@@ -13,9 +13,15 @@ internal sealed class LunaCore : IDisposable
     private readonly LunaToolRegistry _tools = new();
     private readonly LunaDecisionEngine _decision;
     private readonly LunaAutonomyEngine _autonomy = new();
+    private readonly LunaLocalBrain _brain;
+    private readonly ILunaReasoningModel _reasoner = new LunaLocalReasoningModel();
     private bool _disposed;
 
-    public LunaCore() => _decision = new LunaDecisionEngine(_tools);
+    public LunaCore()
+    {
+        _decision = new LunaDecisionEngine(_tools);
+        _brain = new LunaLocalBrain(_tools);
+    }
 
     public async Task<LunaResult> ProcessAsync(string input)
     {
@@ -25,6 +31,12 @@ internal sealed class LunaCore : IDisposable
         _memory.Remember(text);
 
         var thought = _autonomy.Think(text);
+        var localThought = _brain.Think(text);
+        var model = await _reasoner.ReasonAsync(new LunaModelRequest(text, BuildContext(localThought), thought.Intents));
+
+        if (thought.Intents.Count == 0 || (thought.Intents.Count == 1 && thought.Intents[0].Kind == LunaIntentKind.Unknown && model.NeedsClarification))
+            return new($"{model.Summary} Vou pedir mais contexto em vez de inventar uma ação.");
+
         if (thought.Intents.Count > 1)
         {
             var steps = thought.Intents.Select((intent, index) =>
@@ -42,6 +54,9 @@ internal sealed class LunaCore : IDisposable
             : await ExecuteAndVerifyAsync(single.RawText, single);
     }
 
+    private static LunaCognitiveContext BuildContext(LunaThought thought)
+        => new(thought.Goal, thought.Observation, [], [], thought.Knowledge, thought.Confidence);
+
     private static string DescribeIntent(LunaIntent intent)
         => intent.Kind == LunaIntentKind.ClickElement
             ? $"clicar em {intent.Value}"
@@ -52,8 +67,14 @@ internal sealed class LunaCore : IDisposable
     private async Task<LunaResult> ExecuteAndVerifyAsync(string text, LunaIntent intent)
     {
         var observation = LunaObserver.Observe();
-        var decision = _decision.Decide(intent);
+        var thought = _brain.Think(text);
+        var brainDecision = _brain.Decide(intent, thought);
+        if (brainDecision.NeedsConfirmation)
+            return new($"Preciso da sua confirmação antes de executar esta ação: {brainDecision.Rationale}");
+        if (brainDecision.Confidence < 0.30 && intent.Kind != LunaIntentKind.ObserveScreen)
+            return new($"Minha confiança para essa ação está baixa ({brainDecision.Confidence:P0}). Vou observar mais antes de agir.");
 
+        var decision = _decision.Decide(intent);
         LunaResult result;
         if (decision.Tool is not null)
         {
