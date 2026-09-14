@@ -106,8 +106,6 @@ internal sealed class LunaCore : IDisposable
                 return new($"Encontrei o projeto pela visão semântica local na tentativa {attempt}, movi o cursor até o projeto e cliquei. Janela observada após o clique: {after.ActiveWindow}.", true);
             }
 
-            // Se uma janela auxiliar (como a Ferramenta de Captura) roubou o foco,
-            // recuperamos uma janela do navegador antes da próxima observação.
             if (!WindowsControl.IsBrowserWindowTitle(observation.ActiveWindow))
             {
                 WindowsControl.ActivateExistingBrowserWindow();
@@ -157,23 +155,39 @@ internal sealed class LunaCore : IDisposable
             var activeTitle = WindowsControl.ActiveWindowTitle();
             var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            if (activeIsBrowser && !WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
+            // Se o usuário já está trabalhando em um navegador, nunca abrimos
+            // outra janela por conta própria. Usamos a MESMA janela e criamos
+            // uma nova aba, preservando as abas existentes (ChatGPT, WhatsApp,
+            // Instagram, etc.). Só reutilizamos a aba atual quando ela está em branco.
+            if (activeIsBrowser)
             {
-                var opened = WindowsControl.OpenNewBrowserWindow();
-                if (!opened.Executed) return opened;
-                Thread.Sleep(900);
-                WindowsControl.ActivateExistingBlankBrowserWindow();
-                Thread.Sleep(250);
+                if (!WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
+                {
+                    var newTab = WindowsControl.PressKey("ctrl+t");
+                    if (!newTab.Executed) return newTab;
+                    Thread.Sleep(500);
+                }
             }
-            else if (!activeIsBrowser)
+            else
             {
-                if (!WindowsControl.ActivateExistingBlankBrowserWindow())
+                // Se a LUNA estiver em primeiro plano ou outra aplicação estiver
+                // ativa, aproveitamos uma janela de navegador já existente. Se
+                // não houver uma janela disponível, abrimos uma única nova janela.
+                if (!WindowsControl.ActivateExistingBrowserWindow())
                 {
                     var opened = WindowsControl.OpenNewBrowserWindow();
                     if (!opened.Executed) return opened;
                     Thread.Sleep(1000);
-                    if (!WindowsControl.ActivateExistingBlankBrowserWindow())
-                        return new($"{opened.Text} Abri o navegador, mas não consegui confirmar uma janela em branco.", true);
+                    if (!WindowsControl.ActivateExistingBrowserWindow())
+                        return new($"{opened.Text} Abri o navegador, mas não consegui assumir uma janela dele.", true);
+                }
+
+                var browserTitle = WindowsControl.ActiveWindowTitle();
+                if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
+                {
+                    var newTab = WindowsControl.PressKey("ctrl+t");
+                    if (!newTab.Executed) return newTab;
+                    Thread.Sleep(500);
                 }
             }
 
@@ -192,7 +206,7 @@ internal sealed class LunaCore : IDisposable
             if (!typed.Executed) return typed;
             var enter = WindowsControl.PressKey("enter");
             return enter.Executed
-                ? new($"{success} Usei uma janela apropriada do navegador sem interromper outra página em uso.", true)
+                ? new($"{success} Mantive a mesma janela do navegador e usei uma nova aba quando a aba atual estava em uso.", true)
                 : enter;
         }
         catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
