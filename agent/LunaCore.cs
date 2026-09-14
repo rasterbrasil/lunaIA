@@ -44,7 +44,7 @@ internal sealed class LunaCore : IDisposable
         {
             if (decision.RequiresConfirmation)
                 return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
-            result = await decision.Tool.Execute();
+            result = await decision.Tool.Execute(intent);
         }
         else
         {
@@ -52,10 +52,8 @@ internal sealed class LunaCore : IDisposable
         }
 
         if (!result.Executed) return result;
-
         var verified = await LunaVerifier.VerifyAsync(text, result);
         if (verified.Executed) return verified;
-
         if (!IsRetryableLaunch(text)) return verified;
 
         var after = LunaObserver.Observe();
@@ -63,8 +61,6 @@ internal sealed class LunaCore : IDisposable
             || !string.Equals(observation.ScreenFingerprint, after.ScreenFingerprint, StringComparison.OrdinalIgnoreCase);
         if (stateChanged) return verified;
 
-        // Uma nova tentativa só acontece quando a verificação falhou E não houve
-        // nenhuma mudança observável. Isso evita duplicar ações que já surtiram efeito.
         await Task.Delay(700);
         var retry = await ExecuteToolWithoutRetryAsync(intent, decision);
         if (!retry.Executed) return retry;
@@ -79,7 +75,7 @@ internal sealed class LunaCore : IDisposable
         if (decision.Tool is not null)
         {
             if (decision.RequiresConfirmation) return new("Ação aguardando confirmação.");
-            return await decision.Tool.Execute();
+            return await decision.Tool.Execute(intent);
         }
         return await ProcessNonToolIntentAsync(intent);
     }
