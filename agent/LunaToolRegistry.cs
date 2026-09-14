@@ -14,10 +14,12 @@ internal sealed class LunaToolRegistry
             new("web.edge", "Abrir o Edge", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Edge.", false, true))),
             new("web.browser", "Abrir o navegador padrão", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o navegador."))),
             new("web.github", "Abrir o GitHub", _ => Task.FromResult(OpenBrowser("https://github.com/", "Abrindo o GitHub."))),
+            new("web.github-project", "Abrir o projeto configurado no GitHub", _ => Task.FromResult(OpenBrowser(ProjectUrl(), "Abrindo seu projeto no GitHub."))),
             new("web.supabase", "Abrir o Supabase", _ => Task.FromResult(OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase."))),
             new("web.vercel", "Abrir a Vercel", _ => Task.FromResult(OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel."))),
             new("web.youtube", "Abrir o YouTube", _ => Task.FromResult(OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube."))),
-            new("web.google", "Abrir o Google", _ => Task.FromResult(OpenBrowser("https://www.google.com/", "Abrindo o Google.")))
+            new("web.google", "Abrir o Google", _ => Task.FromResult(OpenBrowser("https://www.google.com/", "Abrindo o Google."))),
+            new("screen.click", "Clicar em um elemento identificado na tela", intent => Task.FromResult(LunaSemanticVision.ClickByName(intent.Value ?? string.Empty)))
         };
     }
 
@@ -32,16 +34,24 @@ internal sealed class LunaToolRegistry
             LunaIntentKind.OpenWebsite when intent.Target == "chrome" => Find("web.chrome"),
             LunaIntentKind.OpenWebsite when intent.Target == "edge" => Find("web.edge"),
             LunaIntentKind.OpenWebsite when intent.Target == "github" => Find("web.github"),
+            LunaIntentKind.OpenConfiguredProject => Find("web.github-project"),
             LunaIntentKind.OpenWebsite when intent.Target == "supabase" => Find("web.supabase"),
             LunaIntentKind.OpenWebsite when intent.Target == "vercel" => Find("web.vercel"),
             LunaIntentKind.OpenWebsite when intent.Target == "youtube" => Find("web.youtube"),
             LunaIntentKind.OpenWebsite when intent.Target == "google" => Find("web.google"),
             LunaIntentKind.OpenWebsite when intent.Target == "default-browser" => Find("web.browser"),
+            LunaIntentKind.ClickElement => Find("screen.click"),
             _ => null
         };
     }
 
     private LunaTool? Find(string id) => _tools.FirstOrDefault(t => t.Id == id);
+
+    private static string ProjectUrl() => Environment.GetEnvironmentVariable("LUNA_GITHUB_PROJECT_URL")?.Trim() switch
+    {
+        { Length: > 0 } value => value,
+        _ => "https://github.com/rasterbrasil/lunaIA"
+    };
 
     private static LunaResult Open(string fileOrFolder, string success)
     {
