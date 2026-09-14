@@ -62,11 +62,7 @@ internal static class LunaSemanticVision
 
             var x = (int)(rect.X + rect.Width / 2);
             var y = (int)(rect.Y + rect.Height / 2);
-            var moved = LunaMouse.MoveTo(x, y);
-            if (!moved.Executed) return moved;
-
-            // Prefer the real mouse click so the user can see exactly what LUNA is doing.
-            var clicked = LunaMouse.MoveAndClick(x, y, 1);
+            var clicked = LunaMouse.MoveAndClick(x, y);
             return clicked.Executed
                 ? new($"Encontrei '{target}', movi o cursor até ele e cliquei.", true)
                 : clicked;
