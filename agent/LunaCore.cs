@@ -10,6 +10,7 @@ internal sealed class LunaCore : IDisposable
 {
     private readonly LunaMemory _memory = new();
     private readonly LunaPlanner _planner = new();
+    private readonly LunaToolRegistry _tools = new();
     private bool _disposed;
 
     public async Task<LunaResult> ProcessAsync(string input)
@@ -44,8 +45,6 @@ internal sealed class LunaCore : IDisposable
         var verified = await LunaVerifier.VerifyAsync(text, result);
         if (verified.Executed) return verified;
 
-        // Retry somente quando a verificação objetiva indicar que a janela esperada
-        // ainda não apareceu. Nunca repete uma ação já confirmada.
         if (!IsRetryableLaunch(text)) return verified;
 
         var after = LunaObserver.Observe();
@@ -53,7 +52,6 @@ internal sealed class LunaCore : IDisposable
             return verified;
 
         await Task.Delay(700);
-        var retryBefore = LunaObserver.Observe();
         var retry = await ProcessSingleAsync(text);
         if (!retry.Executed) return retry;
 
@@ -74,6 +72,15 @@ internal sealed class LunaCore : IDisposable
     {
         await Task.Yield();
         var n = Normalize(text);
+
+        // Camada de decisão local: primeiro tentamos resolver o pedido por uma
+        // ferramenta registrada. O registry separa intenção de execução e será
+        // o ponto de entrada para futuras ferramentas de mouse, visão, arquivos,
+        // Git e outras capacidades da LUNA.
+        var tool = _tools.Resolve(n);
+        if (tool is not null)
+            return await tool.Execute();
+
         if (Has(n, "quem e voce", "o que voce e")) return new("Eu sou a LUNA. Meu núcleo roda neste computador e não depende de uma API de nuvem para executar estas ações. Estamos construindo minha inteligência por camadas.");
         if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite")) return new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando.");
         if (Has(n, "como voce esta")) return new("Estou funcionando normalmente. Já consigo interpretar pedidos, criar planos simples e executar ações locais no Windows.");
@@ -83,16 +90,6 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "observar tela", "observe minha tela", "observe a tela", "o que esta na tela")) return LunaObserver.Describe();
         if (Has(n, "memoria")) return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
         if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela")) return ScreenVision.Capture();
-        if (Has(n, "bloco de notas", "notepad")) return Open("notepad.exe", null, "Abrindo o Bloco de Notas.");
-        if (Has(n, "calculadora", "calculator", "calc")) return Open("calc.exe", null, "Abrindo a Calculadora.");
-        if (Has(n, "chrome", "google chrome")) return OpenBrowser("https://www.google.com", "Abrindo o Chrome.", preferChrome: true);
-        if (Has(n, "edge", "microsoft edge")) return OpenBrowser("https://www.google.com", "Abrindo o Edge.", preferEdge: true);
-        if (Has(n, "navegador", "browser", "internet", "aba do navegador", "aba no navegador")) return OpenBrowser("https://www.google.com", "Abrindo o navegador.");
-        if (Has(n, "github")) return OpenBrowser("https://github.com/", "Abrindo o GitHub.");
-        if (Has(n, "supabase")) return OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase.");
-        if (Has(n, "vercel")) return OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel.");
-        if (Has(n, "youtube")) return OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube.");
-        if (Has(n, "google")) return OpenBrowser("https://www.google.com/", "Abrindo o Google.");
         var search = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pesquise|pesquisar|procure|procurar|busque|buscar)\s+(.+)$", RegexOptions.IgnoreCase);
         if (search.Success) { var q = search.Groups[1].Value.Trim(); return OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(q), $"Pesquisando por: {q}."); }
         var type = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:digite|escreva|escrever)\s+(.+)$", RegexOptions.IgnoreCase);
