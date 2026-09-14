@@ -35,6 +35,10 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "memoria"))
             return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
 
+        // Olhos: captura local da tela, sem enviar a imagem para a nuvem.
+        if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela"))
+            return ScreenVision.Capture();
+
         // Mãos: abrir aplicativos e pastas.
         if (Has(n, "bloco de notas", "notepad"))
             return Open("notepad.exe", null, "Abrindo o Bloco de Notas.");
@@ -72,7 +76,7 @@ internal sealed class LunaCore : IDisposable
             return WindowsControl.PressKey(key.Groups[1].Value.Trim());
 
         // Atalhos úteis expressos naturalmente.
-        if (Has(n, "nova aba")) return WindowsControl.PressKey("ctrl+l");
+        if (Has(n, "nova aba", "nova guia")) return WindowsControl.PressKey("ctrl+t");
         if (Has(n, "selecionar tudo")) return WindowsControl.PressKey("ctrl+a");
         if (Has(n, "copiar")) return WindowsControl.PressKey("ctrl+c");
         if (Has(n, "colar")) return WindowsControl.PressKey("ctrl+v");
@@ -86,7 +90,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Ainda não tenho uma resposta para esse pedido, mas já consigo executar ações locais e controlar o teclado. O próximo nível será visão da tela e planejamento de tarefas.");
+        return new("Entendi sua mensagem e a guardei na memória. Ainda não tenho uma resposta para esse pedido, mas já consigo executar ações locais e capturar a tela sem enviar a imagem para a nuvem. O próximo nível é fazer minha visão interpretar o que existe na tela e planejar tarefas.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
