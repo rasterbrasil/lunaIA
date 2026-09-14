@@ -248,7 +248,7 @@ internal sealed class LunaAgentContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         UnregisterHotKey(_hotkeyWindow.Handle, HotkeyId);
-        _hotkeyWindow.Dispose();
+        _hotkeyWindow.DestroyHandle();
         _tray.Visible = false;
         _tray.Dispose();
         _speech.Dispose();
