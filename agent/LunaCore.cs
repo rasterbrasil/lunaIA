@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace LunaPC;
 
@@ -15,6 +14,7 @@ internal sealed class LunaCore : IDisposable
     private readonly LunaAutonomyEngine _autonomy = new();
     private readonly LunaLocalBrain _brain;
     private readonly ILunaReasoningModel _reasoner = new LunaLocalReasoningModel();
+    private readonly LunaLocalLanguageEngine _language = new();
     private bool _disposed;
 
     public LunaCore()
@@ -35,7 +35,7 @@ internal sealed class LunaCore : IDisposable
         var model = await _reasoner.ReasonAsync(new LunaModelRequest(text, BuildContext(localThought), thought.Intents));
 
         if (thought.Intents.Count == 0 || (thought.Intents.Count == 1 && thought.Intents[0].Kind == LunaIntentKind.Unknown && model.NeedsClarification))
-            return new($"{model.Summary} Vou pedir mais contexto em vez de inventar uma ação.");
+            return await AnswerWithLocalModelAsync(text);
 
         if (thought.Intents.Count > 1)
         {
@@ -50,7 +50,7 @@ internal sealed class LunaCore : IDisposable
 
         var single = thought.Intents.FirstOrDefault();
         return single is null
-            ? new("Entendi o objetivo, mas ainda não consegui transformá-lo em uma ação local confiável.")
+            ? await AnswerWithLocalModelAsync(text)
             : await ExecuteAndVerifyAsync(single.RawText, single);
     }
 
@@ -165,8 +165,8 @@ internal sealed class LunaCore : IDisposable
         await Task.Yield();
         return intent.Kind switch
         {
-            LunaIntentKind.AskIdentity => new($"{LunaIdentity.Describe()} Esta instalação é a minha base local. Ainda estou em construção, mas meu objetivo é agir com contexto, autonomia e honestidade sobre o que consigo confirmar."),
-            LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local, minha memória e minha camada de raciocínio estão ativos."),
+            LunaIntentKind.AskIdentity => new($"{LunaIdentity.Describe()} Esta instalação é a minha base local. Meu motor de linguagem agora também pode raciocinar e conversar localmente, sem Ollama e sem API de nuvem, quando o modelo estiver instalado."),
+            LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local, minha memória, minha camada de raciocínio e meu motor de linguagem estão ativos."),
             LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
             LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
             LunaIntentKind.AskMemory => new($"Minha memória local contém {_memory.Count} mensagens nesta instalação."),
@@ -178,19 +178,42 @@ internal sealed class LunaCore : IDisposable
             LunaIntentKind.PressKey => WindowsControl.PressKey(intent.Value ?? string.Empty),
             LunaIntentKind.OpenFolder when intent.Target == "Downloads" => Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads."),
             LunaIntentKind.OpenFolder when intent.Target == "Documents" => Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos."),
-            _ => BuildUnknownResponse(intent)
+            _ => await AnswerWithLocalModelAsync(intent.RawText)
         };
     }
 
-    private static LunaResult BuildUnknownResponse(LunaIntent intent)
+    private async Task<LunaResult> AnswerWithLocalModelAsync(string userText)
     {
-        var knowledge = LunaKnowledge.Search(intent.RawText);
-        if (knowledge.Count > 0)
+        try
         {
-            var answer = string.Join(" ", knowledge.Take(2).Select(k => k.Content));
-            return new($"Ainda não encontrei uma ferramenta local para executar esse objetivo. Posso, porém, usar meu conhecimento local relevante: {answer}");
+            var knowledge = LunaKnowledge.Search(userText);
+            var knowledgeText = knowledge.Count == 0
+                ? "Nenhum item específico da base local foi encontrado."
+                : string.Join("\n", knowledge.Take(4).Select(k => "- " + k.Content));
+
+            var systemPrompt = """
+Você é LUNA IA, uma assistente local para Windows. Você é a mesma identidade que está sendo construída neste computador: inteligente, direta, útil, curiosa, crítica e honesta.
+
+Princípios:
+- Responda em português do Brasil, salvo pedido contrário.
+- Não invente fatos, ações ou acesso a serviços.
+- Você é local: não diga que consultou a internet ou uma API se isso não aconteceu.
+- Quando não souber, diga claramente o que falta.
+- Pense passo a passo internamente, mas mostre ao usuário apenas a resposta útil e o raciocínio resumido quando ele for relevante.
+- Você pode conversar naturalmente, explicar assuntos, comparar alternativas, planejar tarefas e ajudar a decidir.
+- Quando uma tarefa exigir controle do Windows, a camada de ferramentas da LUNA fará a execução; não finja ter clicado, aberto ou verificado algo só porque foi solicitado.
+- Preserve a identidade LUNA IA e o contexto de que este projeto está sendo construído para ganhar autonomia progressivamente.
+
+Conhecimento local relevante:
+""" + knowledgeText;
+
+            var answer = await _language.ChatAsync(userText, systemPrompt);
+            return new(answer, false);
         }
-        return new("Entendi sua mensagem e a guardei na memória. A intenção foi reconhecida, mas ainda não existe uma ferramenta local confiável para essa tarefa.");
+        catch (Exception ex)
+        {
+            return new($"Meu motor de linguagem local ainda não está disponível nesta instalação. Detalhe técnico: {ex.Message}");
+        }
     }
 
     internal static LunaResult NavigateOrOpenBrowser(string url, string success)
@@ -279,7 +302,14 @@ internal sealed class LunaCore : IDisposable
         return new string(chars.ToArray()).Normalize(System.Text.NormalizationForm.FormC);
     }
     private static bool Has(string text, params string[] terms) => terms.Any(text.Contains);
-    public void Dispose() { if (_disposed) return; _disposed = true; _memory.Dispose(); }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _language.Dispose();
+        _memory.Dispose();
+    }
 }
 
 internal sealed class LunaMemory : IDisposable
