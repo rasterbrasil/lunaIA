@@ -5,14 +5,14 @@ internal sealed record LunaCognitiveContext(
     LunaObservation Observation,
     IReadOnlyList<string> RelevantPrinciples,
     IReadOnlyList<string> AvailableCapabilities,
+    IReadOnlyList<LunaKnowledgeItem> RelevantKnowledge,
     double Confidence);
 
 /// <summary>
-/// Local reasoning layer. It does not pretend to be a full language model.
-/// It combines the goal, desktop observation, LUNA's charter and known
-/// capabilities to produce a bounded context that planners can use.
-/// A future local model can consume the same context without changing the
-/// execution and verification layers.
+/// Local cognition layer. It combines the goal, live desktop observation,
+/// LUNA's identity, project knowledge and available capabilities. It is a
+/// bounded reasoning layer today; a future local reasoning model can consume
+/// this same context without changing the agent's tools or safety pipeline.
 /// </summary>
 internal sealed class LunaCognitiveKernel
 {
@@ -28,22 +28,30 @@ internal sealed class LunaCognitiveKernel
             principles.Add(LunaIdentity.Principles[0]);
         if (Has(n, "apague", "apagar", "exclua", "excluir", "delete", "remova", "remover", "envie", "enviar", "publique", "publicar"))
             principles.Add(LunaIdentity.Principles[7]);
-        if (Has(n, "falhou", "erro", "nao funcionou", "não funcionou"))
+        if (Has(n, "falhou", "erro", "nao funcionou"))
             principles.Add(LunaIdentity.Principles[5]);
         if (principles.Count == 0)
             principles.Add(LunaIdentity.Principles[3]);
 
-        var confidence = EstimateConfidence(n);
-        return new(goal.Trim(), observation, principles.Distinct().ToArray(), LunaMath.Clamp(confidence, 0.15, 0.98));
+        var knowledge = LunaKnowledge.Search(goal);
+        var confidence = EstimateConfidence(n, knowledge.Count);
+        return new(
+            goal.Trim(),
+            observation,
+            principles.Distinct().ToArray(),
+            LunaIdentity.Capabilities,
+            knowledge,
+            LunaMath.Clamp(confidence, 0.15, 0.98));
     }
 
-    private static double EstimateConfidence(string n)
+    private static double EstimateConfidence(string n, int knowledgeHits)
     {
-        var score = 0.35;
+        var score = 0.30;
         if (Has(n, "luna")) score += 0.05;
-        if (Has(n, "abra", "abrir", "acesse", "entre", "clique", "observe", "digite", "pressione")) score += 0.25;
+        if (Has(n, "abra", "abrir", "acesse", "entre", "clique", "observe", "digite", "pressione", "verifique")) score += 0.25;
         if (Has(n, "github", "chrome", "edge", "supabase", "vercel", "youtube", "google", "calculadora", "notepad")) score += 0.20;
-        if (n.Length > 12) score += 0.08;
+        score += Math.Min(0.15, knowledgeHits * 0.04);
+        if (n.Length > 20) score += 0.05;
         return score;
     }
 
