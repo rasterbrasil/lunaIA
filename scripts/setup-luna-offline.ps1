@@ -1,13 +1,16 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "==============================================="
-Write-Host " LUNA PC - Preparação do cérebro local"
+Write-Host " LUNA PC - Preparação offline"
 Write-Host "==============================================="
 Write-Host ""
-Write-Host "Este processo precisa de internet apenas uma vez para instalar o motor local e baixar o modelo." -ForegroundColor Yellow
-Write-Host "Depois disso, o cérebro da LUNA poderá funcionar sem internet."
+Write-Host "A internet será necessária apenas nesta preparação inicial." -ForegroundColor Yellow
+Write-Host "Depois do download, cérebro e voz poderão funcionar localmente." -ForegroundColor Yellow
 Write-Host ""
 
+# ------------------------------------------------
+# 1. CÉREBRO LOCAL — Ollama + Qwen3 4B
+# ------------------------------------------------
 $ollamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
 
 if (-not $ollamaCommand) {
@@ -36,18 +39,61 @@ if (-not $ollamaCommand) {
     $ollamaExe = $ollamaCommand.Source
 }
 
-Write-Host "Iniciando o motor local..." -ForegroundColor Cyan
+Write-Host "Iniciando o motor local do cérebro..." -ForegroundColor Cyan
 Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
 Start-Sleep -Seconds 3
 
-Write-Host "Baixando o cérebro local Qwen3 4B (aprox. 2,5 GB)..." -ForegroundColor Cyan
+Write-Host "Baixando Qwen3 4B (aprox. 2,5 GB)..." -ForegroundColor Cyan
 & $ollamaExe pull qwen3:4b-instruct
 
+# ------------------------------------------------
+# 2. VOZ NEURAL LOCAL — Piper TTS pt-BR
+# ------------------------------------------------
+$ttsRoot = Join-Path $env:LOCALAPPDATA "LunaPC\tts"
+$piperDir = Join-Path $ttsRoot "piper"
+$voicesDir = Join-Path $ttsRoot "voices"
+$audioDir = Join-Path $ttsRoot "audio"
+New-Item -ItemType Directory -Force -Path $piperDir, $voicesDir, $audioDir | Out-Null
+
+$piperExe = Join-Path $piperDir "piper.exe"
+$voiceModel = Join-Path $voicesDir "pt_BR-faber-medium.onnx"
+$voiceConfig = Join-Path $voicesDir "pt_BR-faber-medium.onnx.json"
+$piperZip = Join-Path $env:TEMP "luna-piper-windows.zip"
+
+if (-not (Test-Path $piperExe)) {
+    Write-Host "Baixando o motor de voz neural Piper para Windows..." -ForegroundColor Cyan
+    $piperUrl = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+    Invoke-WebRequest -Uri $piperUrl -OutFile $piperZip
+
+    $extractDir = Join-Path $env:TEMP "luna-piper-extract"
+    if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+    Expand-Archive -Path $piperZip -DestinationPath $extractDir -Force
+
+    $foundPiper = Get-ChildItem -Path $extractDir -Filter "piper.exe" -Recurse | Select-Object -First 1
+    if (-not $foundPiper) { throw "Não encontrei piper.exe dentro do pacote baixado." }
+
+    Copy-Item $foundPiper.FullName $piperDir -Force
+    $nativeDir = Join-Path $foundPiper.Directory.FullName "piper_phonemize"
+    if (Test-Path $nativeDir) { Copy-Item $nativeDir $piperDir -Recurse -Force }
+
+    Remove-Item $extractDir -Recurse -Force
+    Remove-Item $piperZip -Force -ErrorAction SilentlyContinue
+}
+
+if (-not (Test-Path $voiceModel)) {
+    Write-Host "Baixando voz neural em português do Brasil (aprox. 63 MB)..." -ForegroundColor Cyan
+    $voiceBase = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium"
+    Invoke-WebRequest -Uri "$voiceBase/pt_BR-faber-medium.onnx" -OutFile $voiceModel
+    Invoke-WebRequest -Uri "$voiceBase/pt_BR-faber-medium.onnx.json" -OutFile $voiceConfig
+}
+
 Write-Host ""
-Write-Host "LUNA PC está preparada para usar o cérebro local." -ForegroundColor Green
-Write-Host "Modelo: qwen3:4b-instruct"
-Write-Host "Endpoint local: http://127.0.0.1:11434"
+Write-Host "===============================================" -ForegroundColor Green
+Write-Host " LUNA PC está preparada!" -ForegroundColor Green
+Write-Host "===============================================" -ForegroundColor Green
+Write-Host "Cérebro: Qwen3 4B local"
+Write-Host "Voz: Piper neural pt-BR"
+Write-Host "Local dos recursos: $ttsRoot"
 Write-Host ""
-Write-Host "A partir daqui, as conversas da LUNA não precisam sair do computador." -ForegroundColor Green
-Write-Host "Você pode desconectar a internet e testar a LUNA PC."
+Write-Host "Depois disso, você pode desconectar a internet e testar." -ForegroundColor Green
 Write-Host ""
