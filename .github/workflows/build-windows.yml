@@ -1,8 +1,8 @@
-name: Build LUNA PC
+name: Build LUNA PC 2.0
 
 on:
   push:
-    branches: [main]
+    branches: [main, luna-v2-zero]
     paths:
       - 'agent/**'
       - '.github/workflows/build-windows.yml'
@@ -17,19 +17,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
-      - name: Publish LUNA PC
+      - name: Build
+        run: dotnet build agent/LunaPC.csproj -c Release
+      - name: Publish self-contained Windows app
         run: dotnet publish agent/LunaPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
-
-      - name: Upload executable
+      - name: Package
+        run: Compress-Archive -Path publish/LunaPC.exe -DestinationPath LunaPC-2.0-zero.zip
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LunaPC-win-x64
-          path: publish/LunaPC.exe
-
-      # Build trigger after the first Windows compilation fix.
+          name: LunaPC-2.0-zero
+          path: LunaPC-2.0-zero.zip
