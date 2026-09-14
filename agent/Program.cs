@@ -66,13 +66,13 @@ internal sealed class LunaChatForm : Form
     private readonly Label _status;
     private readonly Label _brainState;
     private readonly BrainPanel _brain;
-    private readonly Timer _pulse;
+    private readonly System.Windows.Forms.Timer _pulse;
     private int _pulseStep;
 
     private static readonly Color Background = Color.FromArgb(7, 11, 20);
     private static readonly Color Panel = Color.FromArgb(12, 18, 31);
     private static readonly Color Panel2 = Color.FromArgb(16, 24, 41);
-    private static readonly Color Text = Color.FromArgb(229, 239, 255);
+    private static readonly Color TextColor = Color.FromArgb(229, 239, 255);
     private static readonly Color Muted = Color.FromArgb(133, 154, 184);
     private static readonly Color Accent = Color.FromArgb(56, 214, 255);
     private static readonly Color Accent2 = Color.FromArgb(113, 91, 255);
@@ -85,13 +85,13 @@ internal sealed class LunaChatForm : Form
         MinimumSize = new Size(860, 620);
         Size = new Size(1040, 700);
         BackColor = Background;
-        ForeColor = Text;
+        ForeColor = TextColor;
         Font = new Font("Segoe UI", 10F);
         DoubleBuffered = true;
 
         var header = new Panel { Left = 24, Top = 20, Width = 992, Height = 82, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.Transparent };
         var logo = new BrainLogo { Left = 0, Top = 5, Width = 58, Height = 58, Accent = Accent };
-        var title = new Label { Text = "LUNA IA", Left = 70, Top = 3, Width = 420, Height = 36, ForeColor = Text, Font = new Font("Segoe UI Semibold", 20F, FontStyle.Bold) };
+        var title = new Label { Text = "LUNA IA", Left = 70, Top = 3, Width = 420, Height = 36, ForeColor = TextColor, Font = new Font("Segoe UI Semibold", 20F, FontStyle.Bold) };
         var subtitle = new Label { Text = "NÚCLEO LOCAL  •  RACIOCÍNIO  •  MEMÓRIA  •  AUTONOMIA", Left = 72, Top = 39, Width = 560, Height = 24, ForeColor = Muted, Font = new Font("Segoe UI", 8.5F, FontStyle.Bold) };
         _status = new Label { Text = "●  LUNA IA ONLINE", Left = 760, Top = 13, Width = 220, Height = 25, ForeColor = Accent, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         _brainState = new Label { Text = "CÉREBRO LOCAL ATIVO", Left = 700, Top = 40, Width = 280, Height = 22, ForeColor = Muted, Font = new Font("Segoe UI", 8F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight, Anchor = AnchorStyles.Top | AnchorStyles.Right };
@@ -102,7 +102,7 @@ internal sealed class LunaChatForm : Form
             Left = 24, Top = 116, Width = 720, Height = 484,
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
             ReadOnly = true, DetectUrls = true, BorderStyle = BorderStyle.None,
-            BackColor = Panel, ForeColor = Text, Font = new Font("Segoe UI", 10.5F),
+            BackColor = Panel, ForeColor = TextColor, Font = new Font("Segoe UI", 10.5F),
             Padding = new Padding(18),
             ScrollBars = RichTextBoxScrollBars.Vertical
         };
@@ -116,10 +116,10 @@ internal sealed class LunaChatForm : Form
 
         var brainTitle = new Label { Text = "NÚCLEO COGNITIVO", Left = 780, Top = 380, Width = 220, Height = 24, ForeColor = Accent, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Anchor = AnchorStyles.Top | AnchorStyles.Right };
         var brainInfo = new Label { Text = "OBSERVAR\nINTERPRETAR\nDECIDIR\nEXECUTAR\nVERIFICAR\nRECUPERAR", Left = 780, Top = 410, Width = 220, Height = 120, ForeColor = Muted, Font = new Font("Consolas", 9F), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        var memoryInfo = new Label { Text = "MEMÓRIA LOCAL\nContexto persistente ativo", Left = 780, Top = 535, Width = 220, Height = 52, ForeColor = Text, Font = new Font("Segoe UI", 8.5F), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        var memoryInfo = new Label { Text = "MEMÓRIA LOCAL\nContexto persistente ativo", Left = 780, Top = 535, Width = 220, Height = 52, ForeColor = TextColor, Font = new Font("Segoe UI", 8.5F), Anchor = AnchorStyles.Top | AnchorStyles.Right };
 
         var inputPanel = new Panel { Left = 24, Top = 616, Width = 992, Height = 56, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom, BackColor = Panel2 };
-        _input = new TextBox { Left = 14, Top = 10, Width = 824, Height = 36, BorderStyle = BorderStyle.None, BackColor = Panel2, ForeColor = Text, Font = new Font("Segoe UI", 10.5F), PlaceholderText = "Fale com a LUNA... diga o objetivo, não apenas o comando.", Anchor = AnchorStyles.Left | AnchorStyles.Right };
+        _input = new TextBox { Left = 14, Top = 10, Width = 824, Height = 36, BorderStyle = BorderStyle.None, BackColor = Panel2, ForeColor = TextColor, Font = new Font("Segoe UI", 10.5F), PlaceholderText = "Fale com a LUNA... diga o objetivo, não apenas o comando.", Anchor = AnchorStyles.Left | AnchorStyles.Right };
         _send = new Button { Text = "➤", Left = 848, Top = 8, Width = 130, Height = 40, FlatStyle = FlatStyle.Flat, BackColor = Accent, ForeColor = Color.FromArgb(4, 10, 18), Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold), Anchor = AnchorStyles.Right };
         _send.FlatAppearance.BorderSize = 0;
         inputPanel.Controls.AddRange([_input, _send]);
@@ -134,7 +134,7 @@ internal sealed class LunaChatForm : Form
             _input.Focus();
         };
 
-        _pulse = new Timer { Interval = 90 };
+        _pulse = new System.Windows.Forms.Timer { Interval = 90 };
         _pulse.Tick += (_, _) => { _pulseStep = (_pulseStep + 1) % 100; _brain.Pulse = _pulseStep; _brain.Invalidate(); };
         _pulse.Start();
     }
@@ -184,7 +184,7 @@ internal sealed class LunaChatForm : Form
         _conversation.SelectionColor = Accent2;
         _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold);
         _conversation.AppendText("VOCÊ\n");
-        _conversation.SelectionColor = Text;
+        _conversation.SelectionColor = TextColor;
         _conversation.SelectionFont = new Font("Segoe UI", 10.5F);
         _conversation.AppendText(text + "\n\n");
         _conversation.SelectionStart = _conversation.TextLength;
@@ -196,7 +196,7 @@ internal sealed class LunaChatForm : Form
         _conversation.SelectionColor = Accent;
         _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold);
         _conversation.AppendText("LUNA IA\n");
-        _conversation.SelectionColor = Text;
+        _conversation.SelectionColor = TextColor;
         _conversation.SelectionFont = new Font("Segoe UI", 10.5F);
         _conversation.AppendText(text + "\n\n");
         _conversation.SelectionStart = _conversation.TextLength;
