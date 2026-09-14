@@ -20,6 +20,29 @@ internal sealed class LunaCore : IDisposable
         var n = Normalize(text);
         _memory.Remember(text);
 
+        // Planejamento inicial: executa pedidos compostos em ordem, sem depender de frases exatas.
+        var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
+            .Select(p => p.Trim())
+            .Where(p => p.Length > 0)
+            .ToArray();
+        if (parts.Length > 1)
+        {
+            var results = new List<LunaResult>();
+            foreach (var part in parts)
+                results.Add(await ProcessSingleAsync(part));
+
+            var executed = results.Any(r => r.Executed);
+            var summary = string.Join(" ", results.Select(r => r.Text));
+            return new($"Plano concluído. {summary}", executed);
+        }
+
+        return await ProcessSingleAsync(text);
+    }
+
+    private async Task<LunaResult> ProcessSingleAsync(string text)
+    {
+        var n = Normalize(text);
+
         if (Has(n, "quem e voce", "o que voce e"))
             return new("Eu sou a LUNA. Meu núcleo roda neste computador e não depende de uma API de nuvem para executar estas ações. Estamos construindo minha inteligência por camadas.");
         if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite"))
@@ -45,7 +68,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "calculadora", "calculator", "calc"))
             return Open("calc.exe", null, "Abrindo a Calculadora.");
 
-        // Navegação web.
+        // Navegação web: primeiro tenta o navegador pedido; depois usa o navegador padrão do Windows.
         if (Has(n, "chrome", "google chrome"))
             return OpenBrowser("https://www.google.com", "Abrindo o Chrome.", preferChrome: true);
         if (Has(n, "edge", "microsoft edge"))
@@ -90,15 +113,20 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Ainda não tenho uma resposta para esse pedido, mas já consigo executar ações locais e capturar a tela sem enviar a imagem para a nuvem. O próximo nível é fazer minha visão interpretar o que existe na tela e planejar tarefas.");
+        return new("Entendi sua mensagem e a guardei na memória. Já consigo planejar pedidos simples em sequência, executar ações locais e capturar a tela sem enviar a imagem para a nuvem. O próximo nível é interpretar visualmente a tela e verificar cada etapa automaticamente.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
     {
         try
         {
-            Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true });
-            return new(success, true);
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = fileOrFolder,
+                Arguments = arguments ?? string.Empty,
+                UseShellExecute = true
+            });
+            return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true);
         }
         catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
     }
@@ -107,17 +135,68 @@ internal sealed class LunaCore : IDisposable
     {
         try
         {
-            if (preferChrome && TryStart("chrome.exe", $"--new-tab \"{url}\"")) return new(success, true);
-            if (preferEdge && TryStart("msedge.exe", $"--new-tab \"{url}\"")) return new(success, true);
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-            return new(success, true);
+            if (preferChrome && TryStartChrome(url)) return new(success, true);
+            if (preferEdge && TryStartEdge(url)) return new(success, true);
+
+            // explorer.exe usa o mecanismo padrão do Windows e não depende de PATH do navegador.
+            if (TryStart("explorer.exe", url)) return new(success, true);
+
+            // Último recurso: associação de protocolo diretamente pelo Windows.
+            if (TryStart("rundll32.exe", $"url.dll,FileProtocolHandler \"{url}\"")) return new(success, true);
+
+            return new("Não consegui abrir o navegador padrão deste computador.");
         }
-        catch { return new("Não consegui abrir o navegador neste computador."); }
+        catch (Exception ex)
+        {
+            return new($"Não consegui abrir o navegador: {ex.Message}");
+        }
+    }
+
+    private static bool TryStartChrome(string url)
+    {
+        var candidates = new[]
+        {
+            "chrome.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
+        };
+        return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
+    }
+
+    private static bool TryStartEdge(string url)
+    {
+        var candidates = new[]
+        {
+            "msedge.exe",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe")
+        };
+        return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
+    }
+
+    private static bool TryStartFirstExisting(IEnumerable<string> candidates, string arguments)
+    {
+        foreach (var file in candidates)
+        {
+            if (file.Contains(Path.DirectorySeparatorChar) && !File.Exists(file)) continue;
+            if (TryStart(file, arguments)) return true;
+        }
+        return false;
     }
 
     private static bool TryStart(string file, string arguments)
     {
-        try { Process.Start(new ProcessStartInfo { FileName = file, Arguments = arguments, UseShellExecute = true }); return true; }
+        try
+        {
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = file,
+                Arguments = arguments,
+                UseShellExecute = true
+            });
+            return process is not null;
+        }
         catch { return false; }
     }
 
