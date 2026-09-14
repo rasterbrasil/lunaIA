@@ -23,7 +23,8 @@ internal sealed class LunaCore : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
-        var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
+        // Divide tarefas compostas sem quebrar frases comuns com "e".
+        var parts = Regex.Split(text, @"\s+(?:(?:e\s+)?(?:depois|em seguida)|e\s+(?=(?:entre|abra|acesse|acessar|clique|clicar|feche|fechar)\b))\s*", RegexOptions.IgnoreCase)
             .Select(p => p.Trim()).Where(p => p.Length > 0).ToArray();
         if (parts.Length > 1)
         {
@@ -52,11 +53,14 @@ internal sealed class LunaCore : IDisposable
         }
 
         if (!result.Executed) return result;
+
+        // Observa novamente depois da ação: janela, tela e árvore semântica.
+        var after = LunaObserver.Observe();
         var verified = await LunaVerifier.VerifyAsync(text, result);
         if (verified.Executed) return verified;
         if (!IsRetryableLaunch(text)) return verified;
 
-        var after = LunaObserver.Observe();
+        // Só tenta novamente quando não houve nenhuma mudança observável.
         var stateChanged = !string.Equals(observation.ActiveWindow, after.ActiveWindow, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(observation.ScreenFingerprint, after.ScreenFingerprint, StringComparison.OrdinalIgnoreCase);
         if (stateChanged) return verified;
@@ -90,7 +94,7 @@ internal sealed class LunaCore : IDisposable
             LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
             LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
             LunaIntentKind.AskMemory => new($"Minha memória local contém {_memory.Count} mensagens nesta instalação."),
-            LunaIntentKind.ObserveScreen => LunaObserver.Describe(),
+            LunaIntentKind.ObserveScreen => LunaSemanticVision.Describe(),
             LunaIntentKind.CaptureScreen => ScreenVision.Capture(),
             LunaIntentKind.SearchWeb => OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(intent.Value ?? string.Empty), $"Pesquisando por: {intent.Value}."),
             LunaIntentKind.TypeText => WindowsControl.TypeText(intent.Value ?? string.Empty),
@@ -104,7 +108,7 @@ internal sealed class LunaCore : IDisposable
     private static bool IsRetryableLaunch(string command)
     {
         var n = Normalize(command);
-        return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google");
+        return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google", "meu projeto", "meu repositorio");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
