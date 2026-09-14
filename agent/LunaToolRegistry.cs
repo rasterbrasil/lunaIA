@@ -14,7 +14,7 @@ internal sealed class LunaToolRegistry
             new("web.edge", "Abrir o Edge", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Edge.", false, true))),
             new("web.browser", "Abrir o navegador padrão", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o navegador."))),
             new("web.github", "Abrir o GitHub", _ => Task.FromResult(OpenBrowser("https://github.com/", "Abrindo o GitHub."))),
-            new("web.github-project", "Abrir o projeto configurado no GitHub", _ => Task.FromResult(OpenBrowser(ProjectUrl(), "Abrindo seu projeto no GitHub."))),
+            new("web.github-project", "Encontrar e abrir o projeto configurado no GitHub", _ => OpenConfiguredProjectAsync()),
             new("web.supabase", "Abrir o Supabase", _ => Task.FromResult(OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase."))),
             new("web.vercel", "Abrir a Vercel", _ => Task.FromResult(OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel."))),
             new("web.youtube", "Abrir o YouTube", _ => Task.FromResult(OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube."))),
@@ -52,6 +52,20 @@ internal sealed class LunaToolRegistry
         { Length: > 0 } value => value,
         _ => "https://github.com/rasterbrasil/lunaIA"
     };
+
+    private static async Task<LunaResult> OpenConfiguredProjectAsync()
+    {
+        var url = ProjectUrl();
+        // Primeiro tenta raciocinar sobre a interface já aberta, usando o nome do repositório.
+        await Task.Delay(1200);
+        var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
+        if (semanticClick.Executed)
+            return new("Encontrei o projeto pela visão semântica local e cliquei nele.", true);
+
+        // Fallback determinístico: usa a configuração local do projeto, sem depender de IA externa.
+        var opened = OpenBrowser(url, "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
+        return opened.Executed ? new($"{opened.Text} A navegação semântica não encontrou o link, então usei o caminho direto configurado.", true) : opened;
+    }
 
     private static LunaResult Open(string fileOrFolder, string success)
     {
