@@ -45,8 +45,6 @@ internal sealed class LunaCore : IDisposable
             if (decision.RequiresConfirmation)
                 return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
 
-            // Navegação web reutiliza o navegador já ativo. Isso evita abrir um segundo navegador
-            // quando uma tarefa composta pede, por exemplo, Chrome e depois GitHub.
             result = await ExecuteToolAsync(intent, decision);
         }
         else
@@ -105,7 +103,7 @@ internal sealed class LunaCore : IDisposable
         return await decision.Tool!.Execute(intent);
     }
 
-    private static async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
+    private async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
     {
         if (decision.Tool is not null)
         {
