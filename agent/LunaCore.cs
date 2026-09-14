@@ -22,8 +22,8 @@ internal sealed class LunaCore : IDisposable
 
         _memory.Remember(text);
 
-        // O cérebro agora passa pedidos compostos pelo planejador real:
-        // objetivo -> etapas -> execução -> resultado de cada etapa.
+        // O cérebro passa pedidos compostos pelo planejador:
+        // objetivo -> etapas -> execução -> verificação -> resultado.
         var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
             .Select(p => p.Trim())
             .Where(p => p.Length > 0)
@@ -34,13 +34,18 @@ internal sealed class LunaCore : IDisposable
             var steps = parts.Select((part, index) => new LunaStep(
                 $"step-{index + 1}",
                 $"Etapa {index + 1}: {part}",
-                () => ProcessSingleAsync(part))).ToList();
+                async () =>
+                {
+                    var execution = await ProcessSingleAsync(part);
+                    return await LunaVerifier.VerifyAsync(part, execution);
+                })).ToList();
 
             var plan = _planner.CreatePlan(text, steps);
             return await _planner.ExecuteAsync(plan);
         }
 
-        return await ProcessSingleAsync(text);
+        var single = await ProcessSingleAsync(text);
+        return await LunaVerifier.VerifyAsync(text, single);
     }
 
     private async Task<LunaResult> ProcessSingleAsync(string text)
@@ -112,7 +117,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Posso criar planos simples para pedidos em sequência e executar cada etapa localmente. O próximo nível é verificar automaticamente o resultado de cada ação e usar visão para decidir a próxima etapa.");
+        return new("Entendi sua mensagem e a guardei na memória. Posso criar planos simples para pedidos em sequência e executar cada etapa localmente. Também verifico o resultado das ações que consigo observar. O próximo nível é usar visão para interpretar a tela e decidir a próxima etapa automaticamente.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
