@@ -12,19 +12,19 @@ internal static class LunaVerifier
         if (Has(n, "captura de tela", "capturar tela", "print da tela", "screenshot", "tire uma foto da tela", "veja minha tela"))
             return VerifyCapture(result);
 
-        if (Has(n, "clique em", "clicar em", "clique ", "clicar "))
-            return new($"{result.Text} Verificação de interface concluída.", true);
-
         if (Has(n, "meu projeto", "meu repositorio", "entre no projeto", "acesse meu projeto"))
         {
-            await Task.Delay(1800);
-            var title = Normalize(WindowsControl.ActiveWindowTitle());
-            if (Has(title, "lunaia", "rasterbrasil/lunaia"))
-                return new($"{result.Text} Verificação concluída: o projeto LUNA IA está ativo ({WindowsControl.ActiveWindowTitle()}).", true);
-            if (Has(title, "github"))
-                return new($"{result.Text} O GitHub está ativo, mas não consegui confirmar o projeto específico pela janela atual ({WindowsControl.ActiveWindowTitle()}).");
-            return new($"{result.Text} A navegação foi executada, mas a verificação não confirmou o projeto. Janela atual: {WindowsControl.ActiveWindowTitle()}.");
+            await Task.Delay(1600);
+            var browserTitle = Normalize(WindowsControl.FindBrowserWindowTitle());
+            if (Has(browserTitle, "lunaia", "rasterbrasil/lunaia"))
+                return new($"{result.Text} Verificação concluída: encontrei uma janela do navegador no projeto LUNA IA ({WindowsControl.FindBrowserWindowTitle()}).", true);
+            if (Has(browserTitle, "github"))
+                return new($"{result.Text} O GitHub está aberto, mas ainda não consegui confirmar o projeto específico. Janela do navegador: {WindowsControl.FindBrowserWindowTitle()}.");
+            return new($"{result.Text} O clique foi executado, mas não consegui confirmar o projeto em uma janela do navegador. Janela encontrada: {WindowsControl.FindBrowserWindowTitle()}.");
         }
+
+        if (Has(n, "clique em", "clicar em", "clique ", "clicar "))
+            return new($"{result.Text} Verificação de interface concluída.", true);
 
         if (IsLaunchCommand(n))
         {
