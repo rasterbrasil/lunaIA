@@ -56,21 +56,34 @@ internal static class LunaSemanticVision
             var element = root.FindFirst(TreeScope.Descendants, condition);
             if (element is null) return new($"Não encontrei na tela um elemento chamado '{target}'.");
 
-            if (element.TryGetCurrentPattern(InvokePattern.Pattern, out var invokeObject) && invokeObject is InvokePattern invoke)
-            {
-                invoke.Invoke();
-                return new($"Ativei o elemento '{target}' pela interface de acessibilidade.", true);
-            }
-
             var rect = element.Current.BoundingRectangle;
-            if (rect.Width > 0 && rect.Height > 0)
-                return LunaMouse.MoveAndClick((int)(rect.X + rect.Width / 2), (int)(rect.Y + rect.Height / 2));
+            if (rect.Width <= 0 || rect.Height <= 0)
+                return new($"Encontrei '{target}', mas ele não possui uma área visível utilizável.");
 
-            return new($"Encontrei '{target}', mas ele não possui uma área clicável utilizável.");
+            var x = (int)(rect.X + rect.Width / 2);
+            var y = (int)(rect.Y + rect.Height / 2);
+            var moved = LunaMouse.MoveTo(x, y);
+            if (!moved.Executed) return moved;
+
+            // Prefer the real mouse click so the user can see exactly what LUNA is doing.
+            var clicked = LunaMouse.MoveAndClick(x, y, 1);
+            return clicked.Executed
+                ? new($"Encontrei '{target}', movi o cursor até ele e cliquei.", true)
+                : clicked;
         }
         catch (Exception ex)
         {
             return new($"Não consegui ativar '{target}': {ex.Message}");
         }
+    }
+
+    public static LunaResult ClickByNames(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var result = ClickByName(name);
+            if (result.Executed) return result;
+        }
+        return new($"Não encontrei nenhum dos elementos esperados: {string.Join(", ", names)}");
     }
 }
