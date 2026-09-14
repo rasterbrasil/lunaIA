@@ -25,57 +25,45 @@ internal sealed class LunaToolRegistry
 
     public IReadOnlyList<LunaTool> Tools => _tools;
 
-    public LunaTool? Resolve(LunaIntent intent)
+    public LunaTool? Resolve(LunaIntent intent) => intent.Kind switch
     {
-        return intent.Kind switch
-        {
-            LunaIntentKind.OpenApplication when intent.Target == "calculator" => Find("windows.calculator"),
-            LunaIntentKind.OpenApplication when intent.Target == "notepad" => Find("windows.notepad"),
-            LunaIntentKind.OpenWebsite when intent.Target == "chrome" => Find("web.chrome"),
-            LunaIntentKind.OpenWebsite when intent.Target == "edge" => Find("web.edge"),
-            LunaIntentKind.OpenWebsite when intent.Target == "github" => Find("web.github"),
-            LunaIntentKind.OpenConfiguredProject => Find("web.github-project"),
-            LunaIntentKind.OpenWebsite when intent.Target == "supabase" => Find("web.supabase"),
-            LunaIntentKind.OpenWebsite when intent.Target == "vercel" => Find("web.vercel"),
-            LunaIntentKind.OpenWebsite when intent.Target == "youtube" => Find("web.youtube"),
-            LunaIntentKind.OpenWebsite when intent.Target == "google" => Find("web.google"),
-            LunaIntentKind.OpenWebsite when intent.Target == "default-browser" => Find("web.browser"),
-            LunaIntentKind.ClickElement => Find("screen.click"),
-            _ => null
-        };
-    }
+        LunaIntentKind.OpenApplication when intent.Target == "calculator" => Find("windows.calculator"),
+        LunaIntentKind.OpenApplication when intent.Target == "notepad" => Find("windows.notepad"),
+        LunaIntentKind.OpenWebsite when intent.Target == "chrome" => Find("web.chrome"),
+        LunaIntentKind.OpenWebsite when intent.Target == "edge" => Find("web.edge"),
+        LunaIntentKind.OpenWebsite when intent.Target == "github" => Find("web.github"),
+        LunaIntentKind.OpenConfiguredProject => Find("web.github-project"),
+        LunaIntentKind.OpenWebsite when intent.Target == "supabase" => Find("web.supabase"),
+        LunaIntentKind.OpenWebsite when intent.Target == "vercel" => Find("web.vercel"),
+        LunaIntentKind.OpenWebsite when intent.Target == "youtube" => Find("web.youtube"),
+        LunaIntentKind.OpenWebsite when intent.Target == "google" => Find("web.google"),
+        LunaIntentKind.OpenWebsite when intent.Target == "default-browser" => Find("web.browser"),
+        LunaIntentKind.ClickElement => Find("screen.click"),
+        _ => null
+    };
 
     private LunaTool? Find(string id) => _tools.FirstOrDefault(t => t.Id == id);
 
-    private static string ProjectUrl() => Environment.GetEnvironmentVariable("LUNA_GITHUB_PROJECT_URL")?.Trim() switch
-    {
-        { Length: > 0 } value => value,
-        _ => "https://github.com/rasterbrasil/lunaIA"
-    };
-
     private static async Task<LunaResult> OpenConfiguredProjectAsync()
     {
-        var url = ProjectUrl();
-        // Primeiro tenta raciocinar sobre a interface já aberta, usando o nome do repositório.
-        await Task.Delay(1200);
-        var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
-        if (semanticClick.Executed)
-            return new("Encontrei o projeto pela visão semântica local e cliquei nele.", true);
+        // O projeto deve ser encontrado na página do GitHub e aberto pelo clique real.
+        // Não digitamos o nome/endereço do projeto na barra como primeira estratégia.
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            await Task.Delay(attempt == 1 ? 1600 : 900);
+            var semanticClick = LunaSemanticVision.ClickByNameContains("lunaIA", "rasterbrasil/lunaIA");
+            if (semanticClick.Executed)
+                return new($"Encontrei o projeto pela visão semântica local na tentativa {attempt}, movi o cursor até o projeto e cliquei.", true);
+        }
 
-        // Fallback determinístico: usa a configuração local do projeto, sem depender de IA externa.
-        var opened = OpenBrowser(url, "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
-        return opened.Executed ? new($"{opened.Text} A navegação semântica não encontrou o link, então usei o caminho direto configurado.", true) : opened;
+        return new("Não consegui encontrar visualmente o projeto na página atual do GitHub. Não vou digitar o nome na barra de navegação nem abrir um endereço direto, porque a tarefa solicitou que eu encontrasse e clicasse no projeto.");
     }
 
     private static LunaResult Open(string fileOrFolder, string success)
     {
         try
         {
-            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileOrFolder,
-                UseShellExecute = true
-            });
+            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = fileOrFolder, UseShellExecute = true });
             return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true);
         }
         catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
@@ -96,24 +84,13 @@ internal sealed class LunaToolRegistry
 
     private static bool TryStartChrome(string url)
     {
-        var candidates = new[]
-        {
-            "chrome.exe",
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"),
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe")
-        };
+        var candidates = new[] { "chrome.exe", System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"), System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"), System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") };
         return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
     }
 
     private static bool TryStartEdge(string url)
     {
-        var candidates = new[]
-        {
-            "msedge.exe",
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"),
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe")
-        };
+        var candidates = new[] { "msedge.exe", System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"), System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe") };
         return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
     }
 
@@ -131,12 +108,7 @@ internal sealed class LunaToolRegistry
     {
         try
         {
-            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = file,
-                Arguments = arguments,
-                UseShellExecute = true
-            });
+            var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = file, Arguments = arguments, UseShellExecute = true });
             return process is not null;
         }
         catch { return false; }
