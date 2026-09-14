@@ -95,7 +95,7 @@ internal sealed class LunaCore : IDisposable
             await Task.Delay(500);
             var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
             if (semanticClick.Executed)
-                return new("Encontrei o projeto pela visão semântica local e cliquei nele.", true);
+                return new("Encontrei o projeto pela visão semântica local, movi o cursor até ele e cliquei.", true);
 
             return NavigateOrOpenBrowser(ProjectUrl(), "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
         }
@@ -152,20 +152,43 @@ internal sealed class LunaCore : IDisposable
             {
                 browserActive = WindowsControl.ActivateExistingBrowserWindow();
                 if (browserActive)
-                    Thread.Sleep(150);
+                    Thread.Sleep(250);
             }
 
-            if (browserActive)
+            if (!browserActive)
             {
+                // Open a blank browser first so LUNA can visibly take control of it.
+                var opened = OpenBrowser("about:blank", success);
+                if (!opened.Executed) return opened;
+                Thread.Sleep(1200);
+                browserActive = WindowsControl.ActivateExistingBrowserWindow();
+                if (!browserActive)
+                    return new($"{opened.Text} O navegador abriu, mas não consegui assumir o controle visual dele.", true);
+            }
+
+            var addressClick = LunaSemanticVision.ClickByNames(
+                "Address and search bar",
+                "Address bar",
+                "Search or enter address",
+                "Barra de endereços",
+                "Barra de endereço",
+                "Pesquisar ou inserir endereço",
+                "Pesquisar ou digitar endereço");
+
+            if (!addressClick.Executed)
+            {
+                // Fallback only when browser accessibility does not expose the address bar.
                 var address = WindowsControl.PressKey("ctrl+l");
                 if (!address.Executed) return address;
-                var typed = WindowsControl.TypeText(url);
-                if (!typed.Executed) return typed;
-                var enter = WindowsControl.PressKey("enter");
-                return enter.Executed ? new(success + " Reutilizei uma janela do navegador que já estava aberta.", true) : enter;
             }
 
-            return OpenBrowser(url, success);
+            Thread.Sleep(120);
+            var typed = WindowsControl.TypeText(url);
+            if (!typed.Executed) return typed;
+            var enter = WindowsControl.PressKey("enter");
+            return enter.Executed
+                ? new(success + " Mudei o cursor até a barra de endereço e naveguei pela janela do navegador existente.", true)
+                : enter;
         }
         catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
     }
