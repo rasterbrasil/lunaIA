@@ -5,7 +5,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>LunaPC</AssemblyName>
+    <AssemblyName>LunaIA</AssemblyName>
     <RootNamespace>LunaPC</RootNamespace>
     <ApplicationIcon />
   </PropertyGroup>
