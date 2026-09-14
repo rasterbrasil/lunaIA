@@ -14,7 +14,10 @@ internal static class LunaVerifier
 
         if (IsLaunchCommand(n))
         {
-            await Task.Delay(1000);
+            // Alguns aplicativos e navegadores demoram para criar e ativar a janela.
+            // Esperamos antes de decidir que a ação falhou, evitando uma segunda
+            // abertura desnecessária.
+            await Task.Delay(2200);
             var title = WindowsControl.ActiveWindowTitle();
             if (LooksLikeExpectedWindow(n, title))
                 return new($"{result.Text} Verificação concluída: a janela esperada está ativa ({title}).", true);
