@@ -6,7 +6,7 @@ namespace LunaPC;
 
 internal sealed class PiperTts : IDisposable
 {
-    private const string VoiceFileName = "pt_BR-faber-medium.onnx";
+    private const string VoiceFileName = "dii_pt-BR.onnx";
     private readonly string _baseDirectory;
     private readonly string _piperExecutable;
     private readonly string _modelPath;
@@ -29,22 +29,16 @@ internal sealed class PiperTts : IDisposable
 
     public void Speak(string text)
     {
-        if (_disposed || string.IsNullOrWhiteSpace(text)) return;
-        if (!IsReady) return;
-
+        if (_disposed || string.IsNullOrWhiteSpace(text) || !IsReady) return;
         _ = Task.Run(() => SynthesizeAndPlayAsync(text));
     }
 
     private async Task SynthesizeAndPlayAsync(string text)
     {
         string output = Path.Combine(_audioDirectory, $"luna-{Guid.NewGuid():N}.wav");
-
         try
         {
-            lock (_lock)
-            {
-                StopCurrentPlayback();
-            }
+            lock (_lock) StopCurrentPlayback();
 
             using var process = new Process();
             process.StartInfo = new ProcessStartInfo
@@ -75,39 +69,30 @@ internal sealed class PiperTts : IDisposable
                 _player.PlaySync();
             }
         }
-        catch
-        {
-            // Voice is optional. The agent remains usable even if TTS fails.
-        }
+        catch { }
         finally
         {
             lock (_lock)
             {
-                if (ReferenceEquals(_currentProcess, null) || _currentProcess.HasExited)
+                if (_currentProcess is null || _currentProcess.HasExited)
                     _currentProcess = null;
             }
-
             try { if (File.Exists(output)) File.Delete(output); } catch { }
         }
     }
 
     public void Stop()
     {
-        lock (_lock)
-        {
-            StopCurrentPlayback();
-        }
+        lock (_lock) StopCurrentPlayback();
     }
 
     private void StopCurrentPlayback()
     {
         try
         {
-            if (_currentProcess is { HasExited: false })
-                _currentProcess.Kill(true);
+            if (_currentProcess is { HasExited: false }) _currentProcess.Kill(true);
         }
         catch { }
-
         try { _player?.Stop(); } catch { }
         _player?.Dispose();
         _player = null;
