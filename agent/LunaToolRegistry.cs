@@ -1,18 +1,5 @@
 namespace LunaPC;
 
-internal enum LunaRisk
-{
-    Safe,
-    Confirm
-}
-
-internal sealed record LunaTool(
-    string Id,
-    string Description,
-    LunaRisk Risk,
-    Func<Task<LunaResult>> Execute,
-    Func<bool> Matches);
-
 internal sealed class LunaToolRegistry
 {
     private readonly List<LunaTool> _tools;
@@ -21,57 +8,40 @@ internal sealed class LunaToolRegistry
     {
         _tools = new()
         {
-            new("windows.calculator", "Abrir a Calculadora", LunaRisk.Safe,
-                () => Task.FromResult(Open("calc.exe", "Abrindo a Calculadora.")),
-                () => false),
-            new("windows.notepad", "Abrir o Bloco de Notas", LunaRisk.Safe,
-                () => Task.FromResult(Open("notepad.exe", "Abrindo o Bloco de Notas.")),
-                () => false),
-            new("web.chrome", "Abrir o Chrome", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Chrome.", true, false)),
-                () => false),
-            new("web.edge", "Abrir o Edge", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Edge.", false, true)),
-                () => false),
-            new("web.browser", "Abrir o navegador padrão", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o navegador.")),
-                () => false),
-            new("web.github", "Abrir o GitHub", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://github.com/", "Abrindo o GitHub.")),
-                () => false),
-            new("web.supabase", "Abrir o Supabase", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase.")),
-                () => false),
-            new("web.vercel", "Abrir a Vercel", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel.")),
-                () => false),
-            new("web.youtube", "Abrir o YouTube", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube.")),
-                () => false),
-            new("web.google", "Abrir o Google", LunaRisk.Safe,
-                () => Task.FromResult(OpenBrowser("https://www.google.com/", "Abrindo o Google.")),
-                () => false)
+            new("windows.calculator", "Abrir a Calculadora", _ => Task.FromResult(Open("calc.exe", "Abrindo a Calculadora."))),
+            new("windows.notepad", "Abrir o Bloco de Notas", _ => Task.FromResult(Open("notepad.exe", "Abrindo o Bloco de Notas."))),
+            new("web.chrome", "Abrir o Chrome", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Chrome.", true))),
+            new("web.edge", "Abrir o Edge", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o Edge.", false, true))),
+            new("web.browser", "Abrir o navegador padrão", _ => Task.FromResult(OpenBrowser("https://www.google.com", "Abrindo o navegador."))),
+            new("web.github", "Abrir o GitHub", _ => Task.FromResult(OpenBrowser("https://github.com/", "Abrindo o GitHub."))),
+            new("web.supabase", "Abrir o Supabase", _ => Task.FromResult(OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase."))),
+            new("web.vercel", "Abrir a Vercel", _ => Task.FromResult(OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel."))),
+            new("web.youtube", "Abrir o YouTube", _ => Task.FromResult(OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube."))),
+            new("web.google", "Abrir o Google", _ => Task.FromResult(OpenBrowser("https://www.google.com/", "Abrindo o Google.")))
         };
     }
 
     public IReadOnlyList<LunaTool> Tools => _tools;
 
-    public LunaTool? Resolve(string normalizedInput)
+    public LunaTool? Resolve(LunaIntent intent)
     {
-        if (Has(normalizedInput, "calculadora", "calculator", "calc")) return _tools.First(t => t.Id == "windows.calculator");
-        if (Has(normalizedInput, "bloco de notas", "notepad")) return _tools.First(t => t.Id == "windows.notepad");
-        if (Has(normalizedInput, "chrome", "google chrome")) return _tools.First(t => t.Id == "web.chrome");
-        if (Has(normalizedInput, "edge", "microsoft edge")) return _tools.First(t => t.Id == "web.edge");
-        if (Has(normalizedInput, "github")) return _tools.First(t => t.Id == "web.github");
-        if (Has(normalizedInput, "supabase")) return _tools.First(t => t.Id == "web.supabase");
-        if (Has(normalizedInput, "vercel")) return _tools.First(t => t.Id == "web.vercel");
-        if (Has(normalizedInput, "youtube")) return _tools.First(t => t.Id == "web.youtube");
-        if (Has(normalizedInput, "google")) return _tools.First(t => t.Id == "web.google");
-        if (Has(normalizedInput, "navegador", "browser", "internet", "aba do navegador", "aba no navegador")) return _tools.First(t => t.Id == "web.browser");
-        return null;
+        return intent.Kind switch
+        {
+            LunaIntentKind.OpenApplication when intent.Target == "calculator" => Find("windows.calculator"),
+            LunaIntentKind.OpenApplication when intent.Target == "notepad" => Find("windows.notepad"),
+            LunaIntentKind.OpenWebsite when intent.Target == "chrome" => Find("web.chrome"),
+            LunaIntentKind.OpenWebsite when intent.Target == "edge" => Find("web.edge"),
+            LunaIntentKind.OpenWebsite when intent.Target == "github" => Find("web.github"),
+            LunaIntentKind.OpenWebsite when intent.Target == "supabase" => Find("web.supabase"),
+            LunaIntentKind.OpenWebsite when intent.Target == "vercel" => Find("web.vercel"),
+            LunaIntentKind.OpenWebsite when intent.Target == "youtube" => Find("web.youtube"),
+            LunaIntentKind.OpenWebsite when intent.Target == "google" => Find("web.google"),
+            LunaIntentKind.OpenWebsite when intent.Target == "default-browser" => Find("web.browser"),
+            _ => null
+        };
     }
 
-    private static bool Has(string text, params string[] terms) => terms.Any(text.Contains);
+    private LunaTool? Find(string id) => _tools.FirstOrDefault(t => t.Id == id);
 
     private static LunaResult Open(string fileOrFolder, string success)
     {
