@@ -23,7 +23,6 @@ internal sealed class LunaCore : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
-        // Divide tarefas compostas sem quebrar frases comuns com "e".
         var parts = Regex.Split(text, @"\s+(?:(?:e\s+)?(?:depois|em seguida)|e\s+(?=(?:entre|abra|acesse|acessar|clique|clicar|feche|fechar)\b))\s*", RegexOptions.IgnoreCase)
             .Select(p => p.Trim()).Where(p => p.Length > 0).ToArray();
         if (parts.Length > 1)
@@ -54,13 +53,11 @@ internal sealed class LunaCore : IDisposable
 
         if (!result.Executed) return result;
 
-        // Observa novamente depois da ação: janela, tela e árvore semântica.
         var after = LunaObserver.Observe();
         var verified = await LunaVerifier.VerifyAsync(text, result);
         if (verified.Executed) return verified;
         if (!IsRetryableLaunch(text)) return verified;
 
-        // Só tenta novamente quando não houve nenhuma mudança observável.
         var stateChanged = !string.Equals(observation.ActiveWindow, after.ActiveWindow, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(observation.ScreenFingerprint, after.ScreenFingerprint, StringComparison.OrdinalIgnoreCase);
         if (stateChanged) return verified;
@@ -94,9 +91,10 @@ internal sealed class LunaCore : IDisposable
             LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
             LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
             LunaIntentKind.AskMemory => new($"Minha memória local contém {_memory.Count} mensagens nesta instalação."),
+            LunaIntentKind.AskActiveWindow => new($"A janela ativa agora é '{WindowsControl.ActiveWindowTitle()}'."),
             LunaIntentKind.ObserveScreen => LunaSemanticVision.Describe(),
             LunaIntentKind.CaptureScreen => ScreenVision.Capture(),
-            LunaIntentKind.SearchWeb => OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(intent.Value ?? string.Empty), $"Pesquisando por: {intent.Value}."),
+            LunaIntentKind.SearchWeb => NavigateOrOpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(intent.Value ?? string.Empty), $"Pesquisando por: {intent.Value}."),
             LunaIntentKind.TypeText => WindowsControl.TypeText(intent.Value ?? string.Empty),
             LunaIntentKind.PressKey => WindowsControl.PressKey(intent.Value ?? string.Empty),
             LunaIntentKind.OpenFolder when intent.Target == "Downloads" => Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads."),
@@ -115,6 +113,26 @@ internal sealed class LunaCore : IDisposable
     {
         try { var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true }); return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true); }
         catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
+    }
+
+    internal static LunaResult NavigateOrOpenBrowser(string url, string success)
+    {
+        try
+        {
+            var active = Normalize(WindowsControl.ActiveWindowTitle());
+            if (Has(active, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi"))
+            {
+                var address = WindowsControl.PressKey("ctrl+l");
+                if (!address.Executed) return address;
+                var typed = WindowsControl.TypeText(url);
+                if (!typed.Executed) return typed;
+                var enter = WindowsControl.PressKey("enter");
+                return enter.Executed ? new(success + " Usei a aba do navegador que já estava aberta.", true) : enter;
+            }
+
+            return OpenBrowser(url, success);
+        }
+        catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
     }
 
     private static LunaResult OpenBrowser(string url, string success, bool preferChrome = false, bool preferEdge = false)
