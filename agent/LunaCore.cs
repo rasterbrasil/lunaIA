@@ -11,35 +11,46 @@ internal sealed class LunaCore : IDisposable
     private readonly LunaMemory _memory = new();
     private readonly LunaPlanner _planner = new();
     private readonly LunaToolRegistry _tools = new();
+    private readonly LunaDecisionEngine _decision;
     private bool _disposed;
+
+    public LunaCore() => _decision = new LunaDecisionEngine(_tools);
 
     public async Task<LunaResult> ProcessAsync(string input)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(LunaCore));
-
         var text = input.Trim();
-        if (string.IsNullOrWhiteSpace(text))
-            return new("Estou ouvindo. Diga o que você quer que eu faça.");
-
+        if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
         var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
             .Select(p => p.Trim()).Where(p => p.Length > 0).ToArray();
-
         if (parts.Length > 1)
         {
-            var steps = parts.Select((part, index) => new LunaStep(
-                $"step-{index + 1}", $"Etapa {index + 1}: {part}", () => ExecuteAndVerifyAsync(part))).ToList();
+            var steps = parts.Select((part, index) => new LunaStep($"step-{index + 1}", $"Etapa {index + 1}: {part}", () => ExecuteAndVerifyAsync(part))).ToList();
             return await _planner.ExecuteAsync(_planner.CreatePlan(text, steps));
         }
-
         return await ExecuteAndVerifyAsync(text);
     }
 
     private async Task<LunaResult> ExecuteAndVerifyAsync(string text)
     {
-        var before = LunaObserver.Observe();
-        var result = await ProcessSingleAsync(text);
+        var observation = LunaObserver.Observe();
+        var intent = LunaIntentParser.Parse(text);
+        var decision = _decision.Decide(intent);
+
+        LunaResult result;
+        if (decision.Tool is not null)
+        {
+            if (decision.RequiresConfirmation)
+                return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
+            result = await decision.Tool.Execute();
+        }
+        else
+        {
+            result = await ProcessNonToolIntentAsync(intent);
+        }
+
         if (!result.Executed) return result;
 
         var verified = await LunaVerifier.VerifyAsync(text, result);
@@ -48,62 +59,56 @@ internal sealed class LunaCore : IDisposable
         if (!IsRetryableLaunch(text)) return verified;
 
         var after = LunaObserver.Observe();
-        if (!string.Equals(before.ActiveWindow, after.ActiveWindow, StringComparison.OrdinalIgnoreCase))
-            return verified;
+        var stateChanged = !string.Equals(observation.ActiveWindow, after.ActiveWindow, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(observation.ScreenFingerprint, after.ScreenFingerprint, StringComparison.OrdinalIgnoreCase);
+        if (stateChanged) return verified;
 
+        // Uma nova tentativa só acontece quando a verificação falhou E não houve
+        // nenhuma mudança observável. Isso evita duplicar ações que já surtiram efeito.
         await Task.Delay(700);
-        var retry = await ProcessSingleAsync(text);
+        var retry = await ExecuteToolWithoutRetryAsync(intent, decision);
         if (!retry.Executed) return retry;
-
         var retryVerified = await LunaVerifier.VerifyAsync(text, retry);
-        if (retryVerified.Executed)
-            return new($"{retryVerified.Text} A primeira tentativa não foi confirmada; fiz uma segunda tentativa controlada.", true);
+        return retryVerified.Executed
+            ? new($"{retryVerified.Text} A primeira tentativa não foi confirmada; fiz uma segunda tentativa controlada.", true)
+            : new($"{retryVerified.Text} A segunda tentativa também não foi confirmada.");
+    }
 
-        return new($"{retryVerified.Text} A segunda tentativa também não foi confirmada.");
+    private async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
+    {
+        if (decision.Tool is not null)
+        {
+            if (decision.RequiresConfirmation) return new("Ação aguardando confirmação.");
+            return await decision.Tool.Execute();
+        }
+        return await ProcessNonToolIntentAsync(intent);
+    }
+
+    private async Task<LunaResult> ProcessNonToolIntentAsync(LunaIntent intent)
+    {
+        await Task.Yield();
+        return intent.Kind switch
+        {
+            LunaIntentKind.AskIdentity => new("Eu sou a LUNA. Meu núcleo roda neste computador e estamos construindo minha inteligência por camadas, sem depender de uma API de nuvem para executar estas ações."),
+            LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando."),
+            LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
+            LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
+            LunaIntentKind.AskMemory => new($"Minha memória local contém {_memory.Count} mensagens nesta instalação."),
+            LunaIntentKind.ObserveScreen => LunaObserver.Describe(),
+            LunaIntentKind.CaptureScreen => ScreenVision.Capture(),
+            LunaIntentKind.SearchWeb => OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(intent.Value ?? string.Empty), $"Pesquisando por: {intent.Value}."),
+            LunaIntentKind.TypeText => WindowsControl.TypeText(intent.Value ?? string.Empty),
+            LunaIntentKind.PressKey => WindowsControl.PressKey(intent.Value ?? string.Empty),
+            LunaIntentKind.OpenFolder when intent.Target == "Downloads" => Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads."),
+            LunaIntentKind.OpenFolder when intent.Target == "Documents" => Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos."),
+            _ => new("Entendi sua mensagem e a guardei na memória. A intenção foi reconhecida, mas ainda não existe uma ferramenta local para essa tarefa.")
+        };
     }
 
     private static bool IsRetryableLaunch(string command)
     {
         var n = Normalize(command);
         return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google");
-    }
-
-    private async Task<LunaResult> ProcessSingleAsync(string text)
-    {
-        await Task.Yield();
-        var n = Normalize(text);
-
-        // Camada de decisão local: primeiro tentamos resolver o pedido por uma
-        // ferramenta registrada. O registry separa intenção de execução e será
-        // o ponto de entrada para futuras ferramentas de mouse, visão, arquivos,
-        // Git e outras capacidades da LUNA.
-        var tool = _tools.Resolve(n);
-        if (tool is not null)
-            return await tool.Execute();
-
-        if (Has(n, "quem e voce", "o que voce e")) return new("Eu sou a LUNA. Meu núcleo roda neste computador e não depende de uma API de nuvem para executar estas ações. Estamos construindo minha inteligência por camadas.");
-        if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite")) return new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando.");
-        if (Has(n, "como voce esta")) return new("Estou funcionando normalmente. Já consigo interpretar pedidos, criar planos simples e executar ações locais no Windows.");
-        if (Has(n, "que horas", "hora agora")) return new($"Agora são {DateTime.Now:HH:mm}.");
-        if (Has(n, "que dia", "data de hoje", "hoje e")) return new($"Hoje é {DateTime.Now:dd/MM/yyyy}.");
-        if (Has(n, "qual janela", "janela ativa", "onde estou")) return new($"A janela ativa é: {WindowsControl.ActiveWindowTitle()}.");
-        if (Has(n, "observar tela", "observe minha tela", "observe a tela", "o que esta na tela")) return LunaObserver.Describe();
-        if (Has(n, "memoria")) return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
-        if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela")) return ScreenVision.Capture();
-        var search = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pesquise|pesquisar|procure|procurar|busque|buscar)\s+(.+)$", RegexOptions.IgnoreCase);
-        if (search.Success) { var q = search.Groups[1].Value.Trim(); return OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(q), $"Pesquisando por: {q}."); }
-        var type = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:digite|escreva|escrever)\s+(.+)$", RegexOptions.IgnoreCase);
-        if (type.Success) return WindowsControl.TypeText(type.Groups[1].Value.Trim());
-        var key = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pressione|aperte|tecla)\s+(.+)$", RegexOptions.IgnoreCase);
-        if (key.Success) return WindowsControl.PressKey(key.Groups[1].Value.Trim());
-        if (Has(n, "nova aba", "nova guia")) return WindowsControl.PressKey("ctrl+t");
-        if (Has(n, "selecionar tudo")) return WindowsControl.PressKey("ctrl+a");
-        if (Has(n, "copiar")) return WindowsControl.PressKey("ctrl+c");
-        if (Has(n, "colar")) return WindowsControl.PressKey("ctrl+v");
-        if (Has(n, "atualizar pagina", "recarregar pagina")) return WindowsControl.PressKey("f5");
-        if (Has(n, "downloads", "pasta downloads")) return Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads.");
-        if (Has(n, "meus documentos", "documentos", "pasta documentos")) return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
-        return new("Entendi sua mensagem e a guardei na memória. Posso observar o estado básico da tela, criar planos simples, executar ações locais e verificar o resultado. Quando uma ação observável não for confirmada, faço uma segunda tentativa controlada.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
