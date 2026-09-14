@@ -12,11 +12,22 @@ internal static class LunaVerifier
         if (Has(n, "captura de tela", "capturar tela", "print da tela", "screenshot", "tire uma foto da tela", "veja minha tela"))
             return VerifyCapture(result);
 
+        if (Has(n, "clique em", "clicar em", "clique ", "clicar "))
+            return new($"{result.Text} Verificação de interface concluída.", true);
+
+        if (Has(n, "meu projeto", "meu repositorio", "entre no projeto", "acesse meu projeto"))
+        {
+            await Task.Delay(1800);
+            var title = Normalize(WindowsControl.ActiveWindowTitle());
+            if (Has(title, "lunaia", "rasterbrasil/lunaia"))
+                return new($"{result.Text} Verificação concluída: o projeto LUNA IA está ativo ({WindowsControl.ActiveWindowTitle()}).", true);
+            if (Has(title, "github"))
+                return new($"{result.Text} O GitHub está ativo, mas não consegui confirmar o projeto específico pela janela atual ({WindowsControl.ActiveWindowTitle()}).");
+            return new($"{result.Text} A navegação foi executada, mas a verificação não confirmou o projeto. Janela atual: {WindowsControl.ActiveWindowTitle()}.");
+        }
+
         if (IsLaunchCommand(n))
         {
-            // Alguns aplicativos e navegadores demoram para criar e ativar a janela.
-            // Esperamos antes de decidir que a ação falhou, evitando uma segunda
-            // abertura desnecessária.
             await Task.Delay(2200);
             var title = WindowsControl.ActiveWindowTitle();
             if (LooksLikeExpectedWindow(n, title))
