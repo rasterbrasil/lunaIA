@@ -17,6 +17,7 @@ internal enum LunaIntentKind
     AskTime,
     AskDate,
     AskMemory,
+    AskActiveWindow,
     Greeting
 }
 
@@ -39,6 +40,8 @@ internal static class LunaIntentParser
         if (Has(n, "que horas", "hora agora")) return new(LunaIntentKind.AskTime, text);
         if (Has(n, "que dia", "data de hoje", "hoje e")) return new(LunaIntentKind.AskDate, text);
         if (Has(n, "memoria")) return new(LunaIntentKind.AskMemory, text);
+        if (Has(n, "qual janela esta ativa", "qual janela ativa", "qual e a janela ativa", "qual e a janela que esta ativa", "qual janela esta aberta"))
+            return new(LunaIntentKind.AskActiveWindow, text);
         if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite")) return new(LunaIntentKind.Greeting, text);
         if (Has(n, "observar tela", "observe minha tela", "observe a tela", "o que esta na tela")) return new(LunaIntentKind.ObserveScreen, text);
         if (Has(n, "tire uma foto da tela", "tire uma foto da minha tela", "captura de tela", "capturar tela", "print da tela", "screenshot", "veja minha tela")) return new(LunaIntentKind.CaptureScreen, text);
