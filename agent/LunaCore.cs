@@ -44,7 +44,10 @@ internal sealed class LunaCore : IDisposable
         {
             if (decision.RequiresConfirmation)
                 return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
-            result = await decision.Tool.Execute(intent);
+
+            // Navegação web reutiliza o navegador já ativo. Isso evita abrir um segundo navegador
+            // quando uma tarefa composta pede, por exemplo, Chrome e depois GitHub.
+            result = await ExecuteToolAsync(intent, decision);
         }
         else
         {
@@ -71,15 +74,52 @@ internal sealed class LunaCore : IDisposable
             : new($"{retryVerified.Text} A segunda tentativa também não foi confirmada.");
     }
 
-    private async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
+    private static async Task<LunaResult> ExecuteToolAsync(LunaIntent intent, LunaDecision decision)
+    {
+        if (intent.Kind == LunaIntentKind.OpenWebsite)
+        {
+            var url = intent.Target switch
+            {
+                "github" => "https://github.com/",
+                "supabase" => "https://supabase.com/dashboard",
+                "vercel" => "https://vercel.com/dashboard",
+                "youtube" => "https://www.youtube.com/",
+                "google" => "https://www.google.com/",
+                "default-browser" => "https://www.google.com/",
+                _ => null
+            };
+            if (url is not null)
+                return NavigateOrOpenBrowser(url, $"Abrindo {intent.Target}.");
+        }
+
+        if (intent.Kind == LunaIntentKind.OpenConfiguredProject)
+        {
+            await Task.Delay(500);
+            var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
+            if (semanticClick.Executed)
+                return new("Encontrei o projeto pela visão semântica local e cliquei nele.", true);
+
+            return NavigateOrOpenBrowser(ProjectUrl(), "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
+        }
+
+        return await decision.Tool!.Execute(intent);
+    }
+
+    private static async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
     {
         if (decision.Tool is not null)
         {
             if (decision.RequiresConfirmation) return new("Ação aguardando confirmação.");
-            return await decision.Tool.Execute(intent);
+            return await ExecuteToolAsync(intent, decision);
         }
         return await ProcessNonToolIntentAsync(intent);
     }
+
+    private static string ProjectUrl() => Environment.GetEnvironmentVariable("LUNA_GITHUB_PROJECT_URL")?.Trim() switch
+    {
+        { Length: > 0 } value => value,
+        _ => "https://github.com/rasterbrasil/lunaIA"
+    };
 
     private async Task<LunaResult> ProcessNonToolIntentAsync(LunaIntent intent)
     {
@@ -103,18 +143,6 @@ internal sealed class LunaCore : IDisposable
         };
     }
 
-    private static bool IsRetryableLaunch(string command)
-    {
-        var n = Normalize(command);
-        return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google", "meu projeto", "meu repositorio");
-    }
-
-    private static LunaResult Open(string fileOrFolder, string? arguments, string success)
-    {
-        try { var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true }); return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true); }
-        catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
-    }
-
     internal static LunaResult NavigateOrOpenBrowser(string url, string success)
     {
         try
@@ -133,6 +161,18 @@ internal sealed class LunaCore : IDisposable
             return OpenBrowser(url, success);
         }
         catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
+    }
+
+    private static bool IsRetryableLaunch(string command)
+    {
+        var n = Normalize(command);
+        return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google", "meu projeto", "meu repositorio");
+    }
+
+    private static LunaResult Open(string fileOrFolder, string? arguments, string success)
+    {
+        try { var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true }); return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true); }
+        catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
     }
 
     private static LunaResult OpenBrowser(string url, string success, bool preferChrome = false, bool preferEdge = false)
