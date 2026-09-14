@@ -64,7 +64,7 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     private void ShowTextTest()
     {
-        using var form = new TextCommandForm(HandleCommand);
+        using var form = new TextCommandForm(HandleCommandAsync);
         form.ShowDialog();
     }
 
@@ -93,7 +93,7 @@ internal sealed class LunaAgentContext : ApplicationContext
             var result = recognizer.Recognize(TimeSpan.FromSeconds(12));
             var text = result?.Text?.Trim();
             if (string.IsNullOrWhiteSpace(text)) { Speak("Não consegui entender. Tente novamente."); return; }
-            HandleCommand(text);
+            _ = HandleCommandAsync(text);
         }
         catch (InvalidOperationException) { Speak("Não consegui acessar o microfone. Verifique se ele está disponível no Windows."); }
         catch { Speak("Tive um problema ao ouvir você. Vamos tentar novamente."); }
@@ -111,29 +111,31 @@ internal sealed class LunaAgentContext : ApplicationContext
         catch { return null; }
     }
 
-    private void HandleCommand(string text)
+    private async Task<string> HandleCommandAsync(string text)
     {
         var command = text.Trim().ToLowerInvariant();
         if (ContainsAny(command, "quem é você", "quem e voce", "o que você é", "o que voce e"))
-        { Speak("Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro e minha voz podem funcionar localmente no seu computador, sem depender de uma API de terceiros."); return; }
+            return "Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro e minha voz podem funcionar localmente no seu computador, sem depender de uma API de terceiros.";
+
         if (ContainsAny(command, "abra o chrome", "abrir o chrome", "abre o chrome", "abra chrome"))
-        { if (TryStart("chrome.exe")) Speak("Abrindo o Chrome."); else Speak("Não encontrei o Chrome instalado neste computador."); return; }
+            return TryStart("chrome.exe") ? "Abrindo o Chrome." : "Não encontrei o Chrome instalado neste computador.";
+
         if (ContainsAny(command, "abra meu github", "abrir meu github", "abre meu github", "abra o github"))
-        { OpenUrl("https://github.com/rasterbrasil/lunaIA"); Speak("Abrindo o GitHub da LUNA PC. Essa ação precisa de internet."); return; }
-        _ = AskBrainAsync(text);
+        {
+            OpenUrl("https://github.com/rasterbrasil/lunaIA");
+            return "Abrindo o GitHub da LUNA PC. Essa ação precisa de internet.";
+        }
+
+        var answer = await _brain.AskAsync(text);
+        return string.IsNullOrWhiteSpace(answer)
+            ? "Meu cérebro local não retornou uma resposta. Verifique se o motor local de IA está ligado."
+            : answer;
     }
 
-    private async Task AskBrainAsync(string text)
+    private void Speak(string text)
     {
-        try
-        {
-            var answer = await _brain.AskAsync(text);
-            Speak(string.IsNullOrWhiteSpace(answer) ? "Meu cérebro local não retornou uma resposta." : answer);
-        }
-        catch
-        {
-            Speak("Não consegui falar com meu cérebro local agora.");
-        }
+        if (_speech.IsReady)
+            _speech.Speak(text);
     }
 
     private static bool ContainsAny(string text, params string[] values) => values.Any(text.Contains);
@@ -145,15 +147,6 @@ internal sealed class LunaAgentContext : ApplicationContext
     }
 
     private static void OpenUrl(string url) => Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-
-    private void Speak(string text)
-    {
-        if (_speech.IsReady)
-        {
-            _speech.Speak(text);
-            return;
-        }
-    }
 
     private static void EnableStartup()
     {
@@ -181,34 +174,62 @@ internal sealed class LunaAgentContext : ApplicationContext
 internal sealed class TextCommandForm : Form
 {
     private readonly TextBox _input;
-    private readonly Action<string> _command;
+    private readonly Button _send;
+    private readonly TextBox _conversation;
+    private readonly Func<string, Task<string>> _command;
 
-    public TextCommandForm(Action<string> command)
+    public TextCommandForm(Func<string, Task<string>> command)
     {
         _command = command;
         Text = "LUNA PC — Conversar por texto";
         StartPosition = FormStartPosition.CenterScreen;
-        Width = 560; Height = 220;
+        Width = 620; Height = 430;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
 
-        var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 500, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone.", Left = 20, Top = 55, Width = 500 };
-        _input = new TextBox { Left = 20, Top = 82, Width = 500 };
+        var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone.", Left = 20, Top = 55, Width = 560 };
+        _conversation = new TextBox { Left = 20, Top = 82, Width = 560, Height = 230, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
+        _input = new TextBox { Left = 20, Top = 325, Width = 455 };
         _input.PlaceholderText = "Ex.: Luna, como você está?";
-        var send = new Button { Text = "Enviar para a LUNA", Left = 20, Top = 120, Width = 160, Height = 34 };
-        send.Click += (_, _) => Submit();
-        _input.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Submit(); } };
-        Controls.AddRange([title, info, _input, send]);
-        AcceptButton = send;
+        _send = new Button { Text = "Enviar para a LUNA", Left = 485, Top = 323, Width = 95, Height = 34 };
+        _send.Click += async (_, _) => await SubmitAsync();
+        _input.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await SubmitAsync(); } };
+        Controls.AddRange([title, info, _conversation, _input, _send]);
+        AcceptButton = _send;
         Shown += (_, _) => _input.Focus();
     }
 
-    private void Submit()
+    private async Task SubmitAsync()
     {
         var text = _input.Text.Trim();
-        if (string.IsNullOrWhiteSpace(text)) return;
-        _command(text);
+        if (string.IsNullOrWhiteSpace(text) || !_send.Enabled) return;
+
+        _conversation.AppendText($"Você: {text}{Environment.NewLine}");
         _input.Clear();
+        _send.Enabled = false;
+        _input.Enabled = false;
+        _conversation.AppendText("LUNA: pensando..." + Environment.NewLine);
+        try
+        {
+            var answer = await _command(text);
+            var marker = "LUNA: pensando..." + Environment.NewLine;
+            var current = _conversation.Text;
+            if (current.EndsWith(marker, StringComparison.Ordinal))
+                _conversation.Text = current[..^marker.Length];
+            _conversation.AppendText($"LUNA: {answer}{Environment.NewLine}{Environment.NewLine}");
+            _conversation.SelectionStart = _conversation.TextLength;
+            _conversation.ScrollToCaret();
+        }
+        catch
+        {
+            _conversation.AppendText("LUNA: Não consegui processar sua mensagem agora." + Environment.NewLine + Environment.NewLine);
+        }
+        finally
+        {
+            _send.Enabled = true;
+            _input.Enabled = true;
+            _input.Focus();
+        }
     }
 }
