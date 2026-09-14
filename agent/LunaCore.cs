@@ -12,6 +12,7 @@ internal sealed class LunaCore : IDisposable
     private readonly LunaPlanner _planner = new();
     private readonly LunaToolRegistry _tools = new();
     private readonly LunaDecisionEngine _decision;
+    private readonly LunaAutonomyEngine _autonomy = new();
     private bool _disposed;
 
     public LunaCore() => _decision = new LunaDecisionEngine(_tools);
@@ -23,20 +24,37 @@ internal sealed class LunaCore : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
-        var parts = Regex.Split(text, @"\s+(?:(?:e\s+)?(?:depois|em seguida)|e\s+(?=(?:entre|abra|acesse|acessar|clique|clicar|feche|fechar)\b))\s*", RegexOptions.IgnoreCase)
-            .Select(p => p.Trim()).Where(p => p.Length > 0).ToArray();
-        if (parts.Length > 1)
+        // LUNA receives a goal first. The autonomy layer observes the desktop,
+        // interprets each part, chooses a strategy and only then hands actions
+        // to the existing execute/verify/retry pipeline.
+        var thought = _autonomy.Think(text);
+        if (thought.Intents.Count > 1)
         {
-            var steps = parts.Select((part, index) => new LunaStep($"step-{index + 1}", $"Etapa {index + 1}: {part}", () => ExecuteAndVerifyAsync(part))).ToList();
+            var steps = thought.Intents.Select((intent, index) =>
+                new LunaStep(
+                    $"step-{index + 1}",
+                    $"Etapa {index + 1}: {DescribeIntent(intent)}",
+                    () => ExecuteAndVerifyAsync(intent.RawText, intent)))
+                .ToList();
             return await _planner.ExecuteAsync(_planner.CreatePlan(text, steps));
         }
-        return await ExecuteAndVerifyAsync(text);
+
+        var single = thought.Intents.FirstOrDefault();
+        return single is null
+            ? new("Entendi o objetivo, mas ainda não consegui transformá-lo em uma ação local confiável.")
+            : await ExecuteAndVerifyAsync(single.RawText, single);
     }
 
-    private async Task<LunaResult> ExecuteAndVerifyAsync(string text)
+    private static string DescribeIntent(LunaIntent intent)
+        => intent.Kind == LunaIntentKind.ClickElement
+            ? $"clicar em {intent.Value}"
+            : intent.Kind == LunaIntentKind.OpenConfiguredProject
+                ? "localizar e entrar no projeto pela visão"
+                : intent.Kind.ToString();
+
+    private async Task<LunaResult> ExecuteAndVerifyAsync(string text, LunaIntent intent)
     {
         var observation = LunaObserver.Observe();
-        var intent = LunaIntentParser.Parse(text);
         var decision = _decision.Decide(intent);
 
         LunaResult result;
@@ -91,14 +109,14 @@ internal sealed class LunaCore : IDisposable
 
     private async Task<LunaResult> OpenConfiguredProjectByVisionAsync()
     {
-        // A tarefa de entrar no projeto é deliberadamente visual: não digitamos
-        // o nome/URL na barra de endereço como atalho.
+        // The project is deliberately found in the GitHub page and opened by
+        // physical click. We never use the address bar as the primary shortcut.
         var terms = new[] { "lunaIA", "rasterbrasil/lunaIA", "luna IA" };
         for (var attempt = 1; attempt <= 4; attempt++)
         {
             await Task.Delay(attempt == 1 ? 1400 : 900);
             var observation = LunaObserver.Observe();
-            var click = LunaSemanticVision.ClickByNameContains(terms);
+            var click = LunaSemanticVision.ClickByNameContainsInBrowser(terms);
             if (click.Executed)
             {
                 await Task.Delay(1200);
@@ -155,11 +173,7 @@ internal sealed class LunaCore : IDisposable
             var activeTitle = WindowsControl.ActiveWindowTitle();
             var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            // REGRA DE NAVEGAÇÃO DA LUNA:
-            // Se já existe um navegador aberto, NÃO criamos outra janela.
-            // A LUNA assume a janela do navegador existente e abre uma NOVA ABA,
-            // deixando intactas as abas atuais (WhatsApp, ChatGPT, Instagram etc.).
-            // Só criamos uma nova janela quando realmente não existe navegador aberto.
+            // Existing browser => preserve the window and use a new tab.
             if (activeIsBrowser)
             {
                 if (!WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
@@ -171,9 +185,6 @@ internal sealed class LunaCore : IDisposable
             }
             else
             {
-                // A LUNA está em outra aplicação (por exemplo, sua própria janela).
-                // Primeiro procura uma janela de navegador já existente.
-                // Se encontrar, ativa ESSA janela e cria uma nova aba nela.
                 if (WindowsControl.ActivateExistingBrowserWindow())
                 {
                     Thread.Sleep(250);
@@ -187,7 +198,6 @@ internal sealed class LunaCore : IDisposable
                 }
                 else
                 {
-                    // Nenhum navegador existente: somente agora abrimos uma janela nova.
                     var opened = WindowsControl.OpenNewBrowserWindow();
                     if (!opened.Executed) return opened;
                     Thread.Sleep(900);
@@ -205,9 +215,6 @@ internal sealed class LunaCore : IDisposable
                 }
             }
 
-            // Agora a nova aba (ou a aba em branco) está selecionada.
-            // A barra de endereço é encontrada pela visão semântica para que o
-            // cursor possa se mover fisicamente até ela; Ctrl+L é somente fallback.
             var addressClick = LunaSemanticVision.ClickByNames(
                 "Address and search bar", "Address bar", "Search or enter address",
                 "Barra de endereços", "Barra de endereço", "Pesquisar ou inserir endereço",
