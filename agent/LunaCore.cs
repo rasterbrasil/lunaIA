@@ -42,8 +42,7 @@ internal sealed class LunaCore : IDisposable
         LunaResult result;
         if (decision.Tool is not null)
         {
-            if (decision.RequiresConfirmation)
-                return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
+            if (decision.RequiresConfirmation) return new($"Preciso da sua confirmação antes de executar: {decision.Tool.Description}.");
             result = await ExecuteToolAsync(intent, decision);
         }
         else result = await ProcessNonToolIntentAsync(intent);
@@ -85,15 +84,38 @@ internal sealed class LunaCore : IDisposable
         }
 
         if (intent.Kind == LunaIntentKind.OpenConfiguredProject)
-        {
-            await Task.Delay(500);
-            var semanticClick = LunaSemanticVision.ClickByName("lunaIA");
-            if (semanticClick.Executed)
-                return new("Encontrei o projeto pela visão semântica local, movi o cursor até ele e cliquei.", true);
-            return NavigateOrOpenBrowser(ProjectUrl(), "Não encontrei o projeto na interface; abri diretamente o projeto configurado.");
-        }
+            return await OpenConfiguredProjectByVisionAsync();
 
         return await decision.Tool!.Execute(intent);
+    }
+
+    private async Task<LunaResult> OpenConfiguredProjectByVisionAsync()
+    {
+        // A tarefa de entrar no projeto é deliberadamente visual: não digitamos
+        // o nome/URL na barra de endereço como atalho.
+        var terms = new[] { "lunaIA", "rasterbrasil/lunaIA", "luna IA" };
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            await Task.Delay(attempt == 1 ? 1400 : 900);
+            var observation = LunaObserver.Observe();
+            var click = LunaSemanticVision.ClickByNameContains(terms);
+            if (click.Executed)
+            {
+                await Task.Delay(1200);
+                var after = LunaObserver.Observe();
+                return new($"Encontrei o projeto pela visão semântica local na tentativa {attempt}, movi o cursor até o projeto e cliquei. Janela observada após o clique: {after.ActiveWindow}.", true);
+            }
+
+            // Se uma janela auxiliar (como a Ferramenta de Captura) roubou o foco,
+            // recuperamos uma janela do navegador antes da próxima observação.
+            if (!WindowsControl.IsBrowserWindowTitle(observation.ActiveWindow))
+            {
+                WindowsControl.ActivateExistingBrowserWindow();
+                await Task.Delay(250);
+            }
+        }
+
+        return new("Não consegui encontrar visualmente o projeto na página do GitHub após quatro tentativas. Não vou digitar o nome na barra de navegação nem abrir o endereço diretamente.");
     }
 
     private async Task<LunaResult> ExecuteToolWithoutRetryAsync(LunaIntent intent, LunaDecision decision)
@@ -105,12 +127,6 @@ internal sealed class LunaCore : IDisposable
         }
         return await ProcessNonToolIntentAsync(intent);
     }
-
-    private static string ProjectUrl() => Environment.GetEnvironmentVariable("LUNA_GITHUB_PROJECT_URL")?.Trim() switch
-    {
-        { Length: > 0 } value => value,
-        _ => "https://github.com/rasterbrasil/lunaIA"
-    };
 
     private async Task<LunaResult> ProcessNonToolIntentAsync(LunaIntent intent)
     {
@@ -141,25 +157,23 @@ internal sealed class LunaCore : IDisposable
             var activeTitle = WindowsControl.ActiveWindowTitle();
             var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            // Never hijack an active browser page. If the user is on Instagram,
-            // YouTube, ChatGPT, GitHub, etc., LUNA opens a separate window.
             if (activeIsBrowser && !WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
             {
                 var opened = WindowsControl.OpenNewBrowserWindow();
                 if (!opened.Executed) return opened;
-                Thread.Sleep(700);
+                Thread.Sleep(900);
+                WindowsControl.ActivateExistingBlankBrowserWindow();
+                Thread.Sleep(250);
             }
             else if (!activeIsBrowser)
             {
-                // A blank browser window may already exist elsewhere. Reuse it;
-                // otherwise create a new browser window.
                 if (!WindowsControl.ActivateExistingBlankBrowserWindow())
                 {
-                    var opened = OpenBrowser("about:blank", success);
+                    var opened = WindowsControl.OpenNewBrowserWindow();
                     if (!opened.Executed) return opened;
-                    Thread.Sleep(1200);
+                    Thread.Sleep(1000);
                     if (!WindowsControl.ActivateExistingBlankBrowserWindow())
-                        return new($"{opened.Text} O navegador abriu, mas não consegui assumir uma janela em branco.", true);
+                        return new($"{opened.Text} Abri o navegador, mas não consegui confirmar uma janela em branco.", true);
                 }
             }
 
@@ -194,43 +208,6 @@ internal sealed class LunaCore : IDisposable
     {
         try { var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true }); return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true); }
         catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
-    }
-
-    private static LunaResult OpenBrowser(string url, string success, bool preferChrome = false, bool preferEdge = false)
-    {
-        try
-        {
-            if (preferChrome && TryStartChrome(url)) return new(success, true);
-            if (preferEdge && TryStartEdge(url)) return new(success, true);
-            if (TryStart("explorer.exe", url)) return new(success, true);
-            if (TryStart("rundll32.exe", $"url.dll,FileProtocolHandler \"{url}\"")) return new(success, true);
-            return new("Não consegui abrir o navegador padrão deste computador.");
-        }
-        catch (Exception ex) { return new($"Não consegui abrir o navegador: {ex.Message}"); }
-    }
-
-    private static bool TryStartChrome(string url)
-    {
-        var candidates = new[] { "chrome.exe", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Google", "Chrome", "Application", "chrome.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") };
-        return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
-    }
-
-    private static bool TryStartEdge(string url)
-    {
-        var candidates = new[] { "msedge.exe", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe") };
-        return TryStartFirstExisting(candidates, $"--new-tab \"{url}\"");
-    }
-
-    private static bool TryStartFirstExisting(IEnumerable<string> candidates, string arguments)
-    {
-        foreach (var file in candidates) { if (file.Contains(Path.DirectorySeparatorChar) && !File.Exists(file)) continue; if (TryStart(file, arguments)) return true; }
-        return false;
-    }
-
-    private static bool TryStart(string file, string arguments)
-    {
-        try { var process = Process.Start(new ProcessStartInfo { FileName = file, Arguments = arguments, UseShellExecute = true }); return process is not null; }
-        catch { return false; }
     }
 
     private static string Normalize(string value)
