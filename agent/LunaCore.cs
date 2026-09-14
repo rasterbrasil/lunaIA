@@ -155,10 +155,11 @@ internal sealed class LunaCore : IDisposable
             var activeTitle = WindowsControl.ActiveWindowTitle();
             var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
 
-            // Se o usuário já está trabalhando em um navegador, nunca abrimos
-            // outra janela por conta própria. Usamos a MESMA janela e criamos
-            // uma nova aba, preservando as abas existentes (ChatGPT, WhatsApp,
-            // Instagram, etc.). Só reutilizamos a aba atual quando ela está em branco.
+            // REGRA DE NAVEGAÇÃO DA LUNA:
+            // Se já existe um navegador aberto, NÃO criamos outra janela.
+            // A LUNA assume a janela do navegador existente e abre uma NOVA ABA,
+            // deixando intactas as abas atuais (WhatsApp, ChatGPT, Instagram etc.).
+            // Só criamos uma nova janela quando realmente não existe navegador aberto.
             if (activeIsBrowser)
             {
                 if (!WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
@@ -170,27 +171,43 @@ internal sealed class LunaCore : IDisposable
             }
             else
             {
-                // Se a LUNA estiver em primeiro plano ou outra aplicação estiver
-                // ativa, aproveitamos uma janela de navegador já existente. Se
-                // não houver uma janela disponível, abrimos uma única nova janela.
-                if (!WindowsControl.ActivateExistingBrowserWindow())
+                // A LUNA está em outra aplicação (por exemplo, sua própria janela).
+                // Primeiro procura uma janela de navegador já existente.
+                // Se encontrar, ativa ESSA janela e cria uma nova aba nela.
+                if (WindowsControl.ActivateExistingBrowserWindow())
                 {
+                    Thread.Sleep(250);
+                    var browserTitle = WindowsControl.ActiveWindowTitle();
+                    if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
+                    {
+                        var newTab = WindowsControl.PressKey("ctrl+t");
+                        if (!newTab.Executed) return newTab;
+                        Thread.Sleep(500);
+                    }
+                }
+                else
+                {
+                    // Nenhum navegador existente: somente agora abrimos uma janela nova.
                     var opened = WindowsControl.OpenNewBrowserWindow();
                     if (!opened.Executed) return opened;
-                    Thread.Sleep(1000);
-                    if (!WindowsControl.ActivateExistingBrowserWindow())
-                        return new($"{opened.Text} Abri o navegador, mas não consegui assumir uma janela dele.", true);
-                }
+                    Thread.Sleep(900);
 
-                var browserTitle = WindowsControl.ActiveWindowTitle();
-                if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
-                {
-                    var newTab = WindowsControl.PressKey("ctrl+t");
-                    if (!newTab.Executed) return newTab;
-                    Thread.Sleep(500);
+                    if (!WindowsControl.ActivateExistingBrowserWindow())
+                        return new($"{opened.Text} Abri o navegador, mas não consegui assumir a janela dele.", true);
+
+                    var browserTitle = WindowsControl.ActiveWindowTitle();
+                    if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
+                    {
+                        var newTab = WindowsControl.PressKey("ctrl+t");
+                        if (!newTab.Executed) return newTab;
+                        Thread.Sleep(500);
+                    }
                 }
             }
 
+            // Agora a nova aba (ou a aba em branco) está selecionada.
+            // A barra de endereço é encontrada pela visão semântica para que o
+            // cursor possa se mover fisicamente até ela; Ctrl+L é somente fallback.
             var addressClick = LunaSemanticVision.ClickByNames(
                 "Address and search bar", "Address bar", "Search or enter address",
                 "Barra de endereços", "Barra de endereço", "Pesquisar ou inserir endereço",
@@ -206,7 +223,7 @@ internal sealed class LunaCore : IDisposable
             if (!typed.Executed) return typed;
             var enter = WindowsControl.PressKey("enter");
             return enter.Executed
-                ? new($"{success} Mantive a mesma janela do navegador e usei uma nova aba quando a aba atual estava em uso.", true)
+                ? new($"{success} Mantive a janela do navegador que você já estava usando e abri o destino em uma nova aba.", true)
                 : enter;
         }
         catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
