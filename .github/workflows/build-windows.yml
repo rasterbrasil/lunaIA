@@ -31,3 +31,5 @@ jobs:
         with:
           name: LunaPC-win-x64
           path: publish/LunaPC.exe
+
+      # Build trigger after the first Windows compilation fix.
