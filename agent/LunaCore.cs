@@ -72,7 +72,7 @@ internal sealed class LunaCore : IDisposable
             : new($"{retryVerified.Text} A segunda tentativa também não foi confirmada.");
     }
 
-    private static async Task<LunaResult> ExecuteToolAsync(LunaIntent intent, LunaDecision decision)
+    private async Task<LunaResult> ExecuteToolAsync(LunaIntent intent, LunaDecision decision)
     {
         if (intent.Kind == LunaIntentKind.OpenWebsite)
         {
@@ -146,14 +146,23 @@ internal sealed class LunaCore : IDisposable
         try
         {
             var active = Normalize(WindowsControl.ActiveWindowTitle());
-            if (Has(active, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi"))
+            var browserActive = Has(active, "chrome", "google chrome", "microsoft edge", "edge", "firefox", "opera", "brave", "vivaldi");
+
+            if (!browserActive)
+            {
+                browserActive = WindowsControl.ActivateExistingBrowserWindow();
+                if (browserActive)
+                    Thread.Sleep(150);
+            }
+
+            if (browserActive)
             {
                 var address = WindowsControl.PressKey("ctrl+l");
                 if (!address.Executed) return address;
                 var typed = WindowsControl.TypeText(url);
                 if (!typed.Executed) return typed;
                 var enter = WindowsControl.PressKey("enter");
-                return enter.Executed ? new(success + " Usei a aba do navegador que já estava aberta.", true) : enter;
+                return enter.Executed ? new(success + " Reutilizei uma janela do navegador que já estava aberta.", true) : enter;
             }
 
             return OpenBrowser(url, success);
