@@ -22,8 +22,6 @@ internal sealed class LunaCore : IDisposable
 
         _memory.Remember(text);
 
-        // O cérebro passa pedidos compostos pelo planejador:
-        // objetivo -> etapas -> execução -> verificação -> resultado.
         var parts = Regex.Split(text, @"\s+(?:e depois|depois|em seguida)\s+", RegexOptions.IgnoreCase)
             .Select(p => p.Trim())
             .Where(p => p.Length > 0)
@@ -34,18 +32,45 @@ internal sealed class LunaCore : IDisposable
             var steps = parts.Select((part, index) => new LunaStep(
                 $"step-{index + 1}",
                 $"Etapa {index + 1}: {part}",
-                async () =>
-                {
-                    var execution = await ProcessSingleAsync(part);
-                    return await LunaVerifier.VerifyAsync(part, execution);
-                })).ToList();
+                () => ExecuteAndVerifyWithRetryAsync(part))).ToList();
 
             var plan = _planner.CreatePlan(text, steps);
             return await _planner.ExecuteAsync(plan);
         }
 
-        var single = await ProcessSingleAsync(text);
-        return await LunaVerifier.VerifyAsync(text, single);
+        return await ExecuteAndVerifyWithRetryAsync(text);
+    }
+
+    private async Task<LunaResult> ExecuteAndVerifyWithRetryAsync(string text)
+    {
+        var before = LunaObserver.Observe();
+        var result = await ProcessSingleAsync(text);
+        var verified = await LunaVerifier.VerifyAsync(text, result);
+        if (verified.Executed)
+            return verified;
+
+        // Se a ação falhar na verificação, observamos novamente e tentamos uma vez.
+        // O retry é limitado a uma tentativa para evitar loops automáticos.
+        var after = LunaObserver.Observe();
+        if (result.Executed && ShouldRetry(text, before, after))
+        {
+            await Task.Delay(500);
+            var retry = await ProcessSingleAsync(text);
+            var retryVerified = await LunaVerifier.VerifyAsync(text, retry);
+            if (retryVerified.Executed)
+                return new($"{retryVerified.Text} Fiz uma segunda tentativa após a primeira verificação falhar.", true);
+            return new($"{retryVerified.Text} A segunda tentativa também não foi confirmada.");
+        }
+
+        return verified;
+    }
+
+    private static bool ShouldRetry(string command, LunaObservation before, LunaObservation after)
+    {
+        var n = Normalize(command);
+        if (Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google"))
+            return string.Equals(before.ActiveWindow, after.ActiveWindow, StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private async Task<LunaResult> ProcessSingleAsync(string text)
@@ -65,6 +90,8 @@ internal sealed class LunaCore : IDisposable
             return new($"Hoje é {DateTime.Now:dd/MM/yyyy}.");
         if (Has(n, "qual janela", "janela ativa", "onde estou"))
             return new($"A janela ativa é: {WindowsControl.ActiveWindowTitle()}.");
+        if (Has(n, "observar tela", "observe minha tela", "observe a tela", "o que esta na tela"))
+            return LunaObserver.Describe();
         if (Has(n, "memoria"))
             return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
 
@@ -117,7 +144,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Posso criar planos simples para pedidos em sequência e executar cada etapa localmente. Também verifico o resultado das ações que consigo observar. O próximo nível é usar visão para interpretar a tela e decidir a próxima etapa automaticamente.");
+        return new("Entendi sua mensagem e a guardei na memória. Posso observar o estado básico da tela, criar planos simples, executar ações locais e verificar o resultado. Quando uma ação observável não for confirmada, faço uma segunda tentativa controlada.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
