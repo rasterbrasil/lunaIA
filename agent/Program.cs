@@ -42,9 +42,9 @@ internal sealed class LunaAgentContext : ApplicationContext
 
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Falar com a LUNA", null, (_, _) => StartListening());
-        menu.Items.Add("Modo de teste por texto", null, (_, _) => ShowTextTest());
-        menu.Items.Add("Testar voz neural", null, (_, _) => Speak("Olá, Marcos. Eu sou a LUNA. Minha voz agora é gerada localmente no seu computador."));
+        menu.Items.Add("Falar com a LUNA (microfone)", null, (_, _) => StartListening());
+        menu.Items.Add("Conversar por texto (sem microfone)", null, (_, _) => ShowTextTest());
+        menu.Items.Add("Testar voz neural", null, (_, _) => Speak("Olá, Marcos. Eu sou a LUNA. Minha voz agora é neural, feminina e gerada localmente no seu computador."));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Sair", null, (_, _) => ExitThread());
         _tray.ContextMenuStrip = menu;
@@ -55,8 +55,8 @@ internal sealed class LunaAgentContext : ApplicationContext
             Speak("LUNA PC iniciada. Não consegui registrar o atalho global Ctrl Alt L.");
         else
             Speak(_speech.IsReady
-                ? "LUNA PC iniciada. Meu cérebro e minha voz locais estão prontos."
-                : "LUNA PC iniciada. Meu cérebro local está pronto. A voz neural ainda precisa ser preparada.");
+                ? "LUNA PC iniciada. Meu cérebro e minha voz locais estão prontos. Para conversar sem microfone, use o modo Conversar por texto."
+                : "LUNA PC iniciada. Meu cérebro local está pronto. A voz neural ainda precisa ser preparada. Você pode conversar por texto sem microfone.");
         EnableStartup();
     }
 
@@ -80,7 +80,11 @@ internal sealed class LunaAgentContext : ApplicationContext
         try
         {
             using var recognizer = CreateRecognizer();
-            if (recognizer is null) { Speak("Não encontrei reconhecimento de voz instalado no Windows. Você pode usar o modo de teste por texto enquanto estiver sem microfone."); return; }
+            if (recognizer is null)
+            {
+                Speak("O reconhecimento de voz do Windows não está instalado. Como você está sem microfone, use Conversar por texto. Mais adiante vamos substituir esse reconhecimento por um reconhecimento neural local.");
+                return;
+            }
             recognizer.LoadGrammar(new DictationGrammar());
             recognizer.InitialSilenceTimeout = TimeSpan.FromSeconds(5);
             recognizer.BabbleTimeout = TimeSpan.FromSeconds(3);
@@ -182,14 +186,14 @@ internal sealed class TextCommandForm : Form
     public TextCommandForm(Action<string> command)
     {
         _command = command;
-        Text = "LUNA PC — Modo offline";
+        Text = "LUNA PC — Conversar por texto";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 560; Height = 220;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
 
         var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 500, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Converse com a LUNA sem usar a internet:", Left = 20, Top = 55, Width = 500 };
+        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone.", Left = 20, Top = 55, Width = 500 };
         _input = new TextBox { Left = 20, Top = 82, Width = 500 };
         _input.PlaceholderText = "Ex.: Luna, como você está?";
         var send = new Button { Text = "Enviar para a LUNA", Left = 20, Top = 120, Width = 160, Height = 34 };
