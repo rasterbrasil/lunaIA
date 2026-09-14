@@ -7,7 +7,9 @@ internal sealed record LunaObservation(
     string? ScreenshotPath,
     int ScreenWidth,
     int ScreenHeight,
-    bool ScreenHasContent);
+    bool ScreenHasContent,
+    string ScreenFingerprint,
+    DateTime Timestamp);
 
 internal static class LunaObserver
 {
@@ -17,7 +19,6 @@ internal static class LunaObserver
         var width = 0;
         var height = 0;
         var hasContent = false;
-
         try
         {
             var bounds = System.Windows.Forms.Screen.AllScreens
@@ -29,16 +30,24 @@ internal static class LunaObserver
         }
         catch { }
 
-        return new(title, null, width, height, hasContent);
+        var snapshot = ScreenVision.ObserveSnapshot();
+        return new(title, snapshot?.Path, snapshot?.Width ?? width, snapshot?.Height ?? height,
+            snapshot?.HasContent ?? hasContent, snapshot?.Fingerprint ?? string.Empty, DateTime.Now);
     }
 
     public static LunaResult Describe()
     {
         var observation = Observe();
+        var fingerprint = string.IsNullOrEmpty(observation.ScreenFingerprint)
+            ? "não disponível"
+            : observation.ScreenFingerprint[..Math.Min(12, observation.ScreenFingerprint.Length)];
+
         return new(
-            $"Observei a tela. Janela ativa: {observation.ActiveWindow}. " +
+            $"Observei o estado local da tela. Janela ativa: {observation.ActiveWindow}. " +
             $"Área detectada: {observation.ScreenWidth}x{observation.ScreenHeight}. " +
-            (observation.ScreenHasContent ? "A tela está disponível para captura e análise." : "Não consegui determinar a área da tela."),
+            (observation.ScreenHasContent
+                ? $"A tela está disponível para análise. Impressão visual local: {fingerprint}."
+                : "Não consegui determinar a área da tela."),
             observation.ScreenHasContent);
     }
 }
