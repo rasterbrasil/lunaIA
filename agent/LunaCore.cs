@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace LunaPC;
 
@@ -16,44 +17,66 @@ internal sealed class LunaCore : IDisposable
         await Task.Yield();
 
         var text = input.Trim();
-        var n = text.ToLowerInvariant();
+        var n = Normalize(text);
         _memory.Remember(text);
 
-        if (Has(n, "quem é você", "quem e voce", "o que você é", "o que voce e"))
+        if (Has(n, "quem e voce", "o que voce e"))
             return new("Eu sou a LUNA. Meu núcleo roda neste computador e não depende de uma API de nuvem para executar estas ações. Estamos construindo minha inteligência por camadas.");
-        if (Has(n, "olá", "ola", "oi", "bom dia", "boa tarde", "boa noite"))
+        if (Has(n, "ola", "oi", "bom dia", "boa tarde", "boa noite"))
             return new("Olá. Estou aqui. Meu núcleo local e minha memória estão funcionando.");
-        if (Has(n, "como você está", "como voce esta"))
+        if (Has(n, "como voce esta"))
             return new("Estou funcionando normalmente. Já consigo interpretar alguns pedidos e executar ações locais no Windows.");
         if (Has(n, "que horas", "hora agora"))
             return new($"Agora são {DateTime.Now:HH:mm}.");
-        if (Has(n, "que dia", "data de hoje", "hoje é", "hoje e"))
+        if (Has(n, "que dia", "data de hoje", "hoje e"))
             return new($"Hoje é {DateTime.Now:dd/MM/yyyy}.");
-        if (Has(n, "memória", "memoria"))
+        if (Has(n, "qual janela", "janela ativa", "onde estou"))
+            return new($"A janela ativa é: {WindowsControl.ActiveWindowTitle()}.");
+        if (Has(n, "memoria"))
             return new($"Minha memória local contém {_memory.Count} mensagens nesta instalação.");
 
+        // Mãos: abrir aplicativos e pastas.
         if (Has(n, "bloco de notas", "notepad"))
             return Open("notepad.exe", null, "Abrindo o Bloco de Notas.");
         if (Has(n, "calculadora", "calculator", "calc"))
             return Open("calc.exe", null, "Abrindo a Calculadora.");
 
+        // Navegação web.
         if (Has(n, "chrome", "google chrome"))
-            return OpenBrowser("https://www.google.com", "Abrindo o Chrome/navegador.", preferChrome: true);
+            return OpenBrowser("https://www.google.com", "Abrindo o Chrome.", preferChrome: true);
         if (Has(n, "edge", "microsoft edge"))
-            return OpenBrowser("https://www.google.com", "Abrindo o Edge/navegador.", preferEdge: true);
+            return OpenBrowser("https://www.google.com", "Abrindo o Edge.", preferEdge: true);
         if (Has(n, "navegador", "browser", "internet", "aba do navegador", "aba no navegador"))
-            return OpenBrowser("https://www.google.com", "Abrindo uma aba do navegador.");
+            return OpenBrowser("https://www.google.com", "Abrindo o navegador.");
+        if (Has(n, "github")) return OpenBrowser("https://github.com/", "Abrindo o GitHub.");
+        if (Has(n, "supabase")) return OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase.");
+        if (Has(n, "vercel")) return OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel.");
+        if (Has(n, "youtube")) return OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube.");
+        if (Has(n, "google")) return OpenBrowser("https://www.google.com/", "Abrindo o Google.");
 
-        if (Has(n, "meu github", "abre meu github", "abrir meu github", "github"))
-            return OpenBrowser("https://github.com/", "Abrindo o GitHub.");
-        if (Has(n, "supabase"))
-            return OpenBrowser("https://supabase.com/dashboard", "Abrindo o Supabase.");
-        if (Has(n, "vercel"))
-            return OpenBrowser("https://vercel.com/dashboard", "Abrindo a Vercel.");
-        if (Has(n, "youtube"))
-            return OpenBrowser("https://www.youtube.com/", "Abrindo o YouTube.");
-        if (Has(n, "google"))
-            return OpenBrowser("https://www.google.com/", "Abrindo o Google.");
+        // Pesquisa: "pesquise X" abre a pesquisa no navegador.
+        var search = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pesquise|pesquisar|procure|procurar|busque|buscar)\s+(.+)$", RegexOptions.IgnoreCase);
+        if (search.Success)
+        {
+            var query = search.Groups[1].Value.Trim();
+            return OpenBrowser("https://www.google.com/search?q=" + Uri.EscapeDataString(query), $"Pesquisando por: {query}.");
+        }
+
+        // Mãos de teclado: digitar texto na janela que estiver ativa.
+        var type = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:digite|escreva|escrever)\s+(.+)$", RegexOptions.IgnoreCase);
+        if (type.Success)
+            return WindowsControl.TypeText(type.Groups[1].Value.Trim());
+
+        var key = Regex.Match(text, @"^\s*(?:luna[, ]*)?(?:pressione|aperte|tecla)\s+(.+)$", RegexOptions.IgnoreCase);
+        if (key.Success)
+            return WindowsControl.PressKey(key.Groups[1].Value.Trim());
+
+        // Atalhos úteis expressos naturalmente.
+        if (Has(n, "nova aba")) return WindowsControl.PressKey("ctrl+l");
+        if (Has(n, "selecionar tudo")) return WindowsControl.PressKey("ctrl+a");
+        if (Has(n, "copiar")) return WindowsControl.PressKey("ctrl+c");
+        if (Has(n, "colar")) return WindowsControl.PressKey("ctrl+v");
+        if (Has(n, "atualizar pagina", "recarregar pagina")) return WindowsControl.PressKey("f5");
 
         if (Has(n, "downloads", "pasta downloads"))
         {
@@ -63,7 +86,7 @@ internal sealed class LunaCore : IDisposable
         if (Has(n, "meus documentos", "documentos", "pasta documentos"))
             return Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos.");
 
-        return new("Entendi sua mensagem e a guardei na memória. Ainda não reconheço esse pedido como uma ação. Meu próximo nível será ampliar meu interpretador, visão e controle do Windows.");
+        return new("Entendi sua mensagem e a guardei na memória. Ainda não tenho uma resposta para esse pedido, mas já consigo executar ações locais e controlar o teclado. O próximo nível será visão da tela e planejamento de tarefas.");
     }
 
     private static LunaResult Open(string fileOrFolder, string? arguments, string success)
@@ -94,6 +117,13 @@ internal sealed class LunaCore : IDisposable
         catch { return false; }
     }
 
+    private static string Normalize(string value)
+    {
+        var form = value.ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
+        var chars = form.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark);
+        return new string(chars.ToArray()).Normalize(System.Text.NormalizationForm.FormC);
+    }
+
     private static bool Has(string text, params string[] terms) => terms.Any(text.Contains);
 
     public void Dispose()
@@ -116,7 +146,12 @@ internal sealed class LunaMemory : IDisposable
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LunaPC", "memory");
         Directory.CreateDirectory(dir);
         _file = Path.Combine(dir, "conversation.json");
-        try { if (File.Exists(_file)) _messages.AddRange(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_file))?.TakeLast(500) ?? []); } catch { }
+        try
+        {
+            if (File.Exists(_file))
+                _messages.AddRange(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_file))?.TakeLast(500) ?? []);
+        }
+        catch { }
     }
 
     public void Remember(string message)
