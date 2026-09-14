@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Speech.Recognition;
-using System.Speech.Synthesis;
 using Microsoft.Win32;
 
 namespace LunaPC;
@@ -32,24 +31,20 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     private readonly NotifyIcon _tray;
     private readonly HotkeyWindow _hotkeyWindow;
-    private readonly SpeechSynthesizer _speech;
+    private readonly PiperTts _speech;
     private readonly AiBrain _brain;
-    private readonly object _speechLock = new();
     private int _listening;
 
     public LunaAgentContext()
     {
-        _speech = new SpeechSynthesizer();
-        _speech.SetOutputToDefaultAudioDevice();
-        _speech.Rate = 0;
-        _speech.Volume = 100;
+        _speech = new PiperTts();
         _brain = new AiBrain();
 
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Falar com a LUNA", null, (_, _) => StartListening());
         menu.Items.Add("Modo de teste por texto", null, (_, _) => ShowTextTest());
-        menu.Items.Add("Testar voz", null, (_, _) => Speak("Estou aqui, Marcos."));
+        menu.Items.Add("Testar voz neural", null, (_, _) => Speak("Olá, Marcos. Eu sou a LUNA. Minha voz agora é gerada localmente no seu computador."));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Sair", null, (_, _) => ExitThread());
         _tray.ContextMenuStrip = menu;
@@ -59,7 +54,9 @@ internal sealed class LunaAgentContext : ApplicationContext
         if (!RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, ModControl | ModAlt, VkL))
             Speak("LUNA PC iniciada. Não consegui registrar o atalho global Ctrl Alt L.");
         else
-            Speak("LUNA PC iniciada. Meu cérebro local está pronto para funcionar sem internet assim que o motor local estiver instalado.");
+            Speak(_speech.IsReady
+                ? "LUNA PC iniciada. Meu cérebro e minha voz locais estão prontos."
+                : "LUNA PC iniciada. Meu cérebro local está pronto. A voz neural ainda precisa ser preparada.");
         EnableStartup();
     }
 
@@ -114,7 +111,7 @@ internal sealed class LunaAgentContext : ApplicationContext
     {
         var command = text.Trim().ToLowerInvariant();
         if (ContainsAny(command, "quem é você", "quem e voce", "o que você é", "o que voce e"))
-        { Speak("Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro está sendo construído para rodar localmente no seu computador, sem depender de uma API de terceiros."); return; }
+        { Speak("Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro e minha voz podem funcionar localmente no seu computador, sem depender de uma API de terceiros."); return; }
         if (ContainsAny(command, "abra o chrome", "abrir o chrome", "abre o chrome", "abra chrome"))
         { if (TryStart("chrome.exe")) Speak("Abrindo o Chrome."); else Speak("Não encontrei o Chrome instalado neste computador."); return; }
         if (ContainsAny(command, "abra meu github", "abrir meu github", "abre meu github", "abra o github"))
@@ -147,7 +144,11 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     private void Speak(string text)
     {
-        try { lock (_speechLock) { _speech.SpeakAsyncCancelAll(); _speech.SpeakAsync(text); } } catch { }
+        if (_speech.IsReady)
+        {
+            _speech.Speak(text);
+            return;
+        }
     }
 
     private static void EnableStartup()
