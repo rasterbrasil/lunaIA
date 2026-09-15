@@ -3,6 +3,10 @@ using System.Runtime.InteropServices;
 
 namespace LunaPC;
 
+/// <summary>
+/// Executa ações no Windows. Mantém SendInput como fallback, mas resolve nomes
+/// humanos de aplicativos para executáveis reais antes de iniciar um processo.
+/// </summary>
 internal sealed class ActionEngine
 {
     private const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1, MOUSEEVENTF_LEFTDOWN = 2, MOUSEEVENTF_LEFTUP = 4, KEYEVENTF_KEYUP = 2, KEYEVENTF_UNICODE = 4;
@@ -13,17 +17,39 @@ internal sealed class ActionEngine
     [StructLayout(LayoutKind.Explicit)] private struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
     [StructLayout(LayoutKind.Sequential)] private struct MOUSEINPUT { public int dx,dy; public uint mouseData,dwFlags,time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] private struct KEYBDINPUT { public ushort wVk,wScan; public uint dwFlags,time; public IntPtr dwExtraInfo; }
+
     public ActionEngine(Func<string,bool> confirm) => _confirm=confirm;
+
     public async Task<ActionExecutionResult> ExecuteAsync(IEnumerable<BrainAction> actions,CancellationToken ct=default)
     {
         var results=new List<string>();
-        foreach(var a in actions){ ct.ThrowIfCancellationRequested(); if(string.IsNullOrWhiteSpace(a.Type)) continue; if(IsRisky(a)&&!_confirm(Describe(a))){results.Add("Cancelada pelo usuário: "+Describe(a));continue;} try{results.Add(await ExecuteOneAsync(a,ct));}catch(Exception ex){results.Add("Falhou: "+Describe(a)+" — "+ex.Message);}}
+        foreach(var a in actions)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(string.IsNullOrWhiteSpace(a.Type)) continue;
+            if(IsRisky(a)&&!_confirm(Describe(a))){results.Add("Cancelada pelo usuário: "+Describe(a));continue;}
+            try{results.Add(await ExecuteOneAsync(a,ct));}
+            catch(Exception ex){results.Add("Falhou: "+Describe(a)+" — "+ex.Message);}
+        }
         return new(results);
     }
+
     private async Task<string> ExecuteOneAsync(BrainAction a,CancellationToken ct)
     {
-        switch(a.Type){
-            case "open_app": Process.Start(new ProcessStartInfo(a.Target){Arguments=a.Arguments??"",UseShellExecute=true}); await Task.Delay(600,ct); return "Abri "+a.Target+".";
+        switch(a.Type)
+        {
+            case "open_app":
+            {
+                var executable = ResolveApplication(a.Target);
+                var process = Process.Start(new ProcessStartInfo(executable)
+                {
+                    Arguments = a.Arguments ?? "",
+                    UseShellExecute = true
+                });
+                if (process is null) throw new InvalidOperationException("O Windows não conseguiu iniciar o aplicativo.");
+                await Task.Delay(900,ct);
+                return "Abri " + a.Target + " (" + executable + ").";
+            }
             case "open_url": Process.Start(new ProcessStartInfo(a.Url){UseShellExecute=true}); await Task.Delay(600,ct); return "Abri o site.";
             case "run_process": Process.Start(new ProcessStartInfo(a.Target){Arguments=a.Arguments??"",UseShellExecute=true}); return "Executei "+a.Target+".";
             case "click": if(!SetCursorPos(a.X,a.Y)) throw new InvalidOperationException("Não consegui mover o mouse."); SendMouse(MOUSEEVENTF_LEFTDOWN);SendMouse(MOUSEEVENTF_LEFTUP);return $"Cliquei em ({a.X},{a.Y}).";
@@ -38,6 +64,57 @@ internal sealed class ActionEngine
             default: throw new InvalidOperationException("Ação não suportada: "+a.Type);
         }
     }
+
+    /// <summary>
+    /// Converte o nome que o usuário fala/escreve em um alvo que o Windows consegue iniciar.
+    /// Também aceita nomes de executáveis e caminhos completos.
+    /// </summary>
+    private static string ResolveApplication(string target)
+    {
+        var raw = (target ?? "").Trim().Trim('"');
+        var normalized = RemoveDiacritics(raw).ToLowerInvariant();
+        normalized = normalized.Replace("  ", " ");
+
+        var aliases = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["calculadora"] = "calc.exe",
+            ["calculator"] = "calc.exe",
+            ["calc"] = "calc.exe",
+            ["google chrome"] = "chrome.exe",
+            ["chrome"] = "chrome.exe",
+            ["navegador chrome"] = "chrome.exe",
+            ["microsoft edge"] = "msedge.exe",
+            ["edge"] = "msedge.exe",
+            ["navegador edge"] = "msedge.exe",
+            ["bloco de notas"] = "notepad.exe",
+            ["notepad"] = "notepad.exe",
+            ["explorador de arquivos"] = "explorer.exe",
+            ["explorador de ficheiros"] = "explorer.exe",
+            ["explorer"] = "explorer.exe",
+            ["gerenciador de tarefas"] = "taskmgr.exe",
+            ["task manager"] = "taskmgr.exe",
+            ["prompt de comando"] = "cmd.exe",
+            ["cmd"] = "cmd.exe",
+            ["powershell"] = "powershell.exe",
+            ["configuracoes"] = "ms-settings:",
+            ["configuracoes do windows"] = "ms-settings:"
+        };
+
+        if (aliases.TryGetValue(normalized, out var executable)) return executable;
+        if (File.Exists(raw)) return raw;
+        if (raw.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || raw.Contains(':') || raw.Contains('\\')) return raw;
+
+        // Permite que o Windows resolva aplicativos registrados, atalhos e comandos disponíveis no PATH.
+        return raw;
+    }
+
+    private static string RemoveDiacritics(string value)
+    {
+        var normalized = value.Normalize(System.Text.NormalizationForm.FormD);
+        var chars = normalized.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark).ToArray();
+        return new string(chars).Normalize(System.Text.NormalizationForm.FormC);
+    }
+
     private static bool IsRisky(BrainAction a)=>a.Risk is "confirm" or "high"||a.Type is "delete_file" or "run_powershell" or "move_file";
     private static string Describe(BrainAction a)=>a.Type switch{"click"=>$"Clicar em ({a.X},{a.Y})","type_text"=>"Digitar texto","key"=>$"Pressionar {a.Value}","delete_file"=>$"Excluir {a.Path}","move_file"=>$"Mover {a.Path} para {a.Destination}","run_powershell"=>$"Executar PowerShell: {a.Value}",_=>$"Executar {a.Type}: {a.Target}"};
     private static string Quote(string s)=>"\""+(s??"").Replace("\"","\\\"")+"\"";
