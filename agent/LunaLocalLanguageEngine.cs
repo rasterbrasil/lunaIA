@@ -17,10 +17,10 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
     private LLamaWeights? _weights;
     private LLamaContext? _context;
     private InteractiveExecutor? _executor;
-    private ChatSession? _session;
+    private bool _modelLoaded;
     private bool _disposed;
 
-    public bool IsModelReady => File.Exists(_modelPath) && _session is not null;
+    public bool IsModelReady => File.Exists(_modelPath) && _modelLoaded;
     public string ModelPath => _modelPath;
 
     public LunaLocalLanguageEngine()
@@ -37,41 +37,82 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         try
         {
             await EnsureLoadedAsync(cancellationToken);
+
+            // LLamaSharp's supported chat pattern is to create a ChatSession
+            // with the initial history, then send a ChatHistory.Message for each
+            // user turn. Passing a complete ChatHistory into ChatAsync on an
+            // already-running session mixes two different history models and can
+            // leave the executor waiting on the second request.
             var history = new ChatHistory();
             history.AddMessage(AuthorRole.System, systemPrompt);
-            history.AddMessage(AuthorRole.User, userText);
+            var session = new ChatSession(_executor!, history);
+            session.WithHistoryTransform(new PromptTemplateTransformer(_weights!, withAssistant: true));
+
             var inference = new InferenceParams
             {
                 MaxTokens = 512,
-                SamplingPipeline = new DefaultSamplingPipeline { Temperature = 0.55f, TopP = 0.90f, TopK = 20 },
+                SamplingPipeline = new DefaultSamplingPipeline
+                {
+                    Temperature = 0.55f,
+                    TopP = 0.90f,
+                    TopK = 20
+                },
                 AntiPrompts = ["<|im_end|>", "<|endoftext|>"]
             };
+
             var pieces = new List<string>();
-            await foreach (var piece in _session!.ChatAsync(history, inference, cancellationToken))
+            await foreach (var piece in session.ChatAsync(
+                new ChatHistory.Message(AuthorRole.User, userText),
+                inference,
+                cancellationToken))
+            {
                 if (!string.IsNullOrEmpty(piece)) pieces.Add(piece);
+            }
+
             var answer = string.Concat(pieces).Trim();
-            return string.IsNullOrWhiteSpace(answer) ? "Meu motor local terminou o raciocínio sem produzir uma resposta textual." : answer;
+            return string.IsNullOrWhiteSpace(answer)
+                ? "Meu motor local terminou o raciocínio sem produzir uma resposta textual."
+                : answer;
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     private async Task EnsureLoadedAsync(CancellationToken cancellationToken)
     {
-        if (_session is not null) return;
+        if (_modelLoaded) return;
         if (!File.Exists(_modelPath)) await DownloadModelAsync(cancellationToken);
-        var parameters = new ModelParams(_modelPath) { ContextSize = 8192, GpuLayerCount = 0 };
+
+        var parameters = new ModelParams(_modelPath)
+        {
+            ContextSize = 8192,
+            GpuLayerCount = 0
+        };
+
         _weights = await Task.Run(() => LLamaWeights.LoadFromFile(parameters), cancellationToken);
         _context = await Task.Run(() => _weights.CreateContext(parameters), cancellationToken);
         _executor = new InteractiveExecutor(_context);
-        _session = new ChatSession(_executor);
-        _session.WithHistoryTransform(new PromptTemplateTransformer(_weights, withAssistant: true));
+        _modelLoaded = true;
     }
 
     private async Task DownloadModelAsync(CancellationToken cancellationToken)
     {
         var temp = _modelPath + ".download";
-        if (File.Exists(temp)) { try { File.Delete(temp); } catch { } }
-        using var client = new HttpClient(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }) { Timeout = TimeSpan.FromMinutes(30) };
+        if (File.Exists(temp))
+        {
+            try { File.Delete(temp); } catch { }
+        }
+
+        using var client = new HttpClient(new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All
+        })
+        {
+            Timeout = TimeSpan.FromMinutes(30)
+        };
+
         using var response = await client.GetAsync(ModelUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
         await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -86,7 +127,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _session = null;
+        _modelLoaded = false;
         _executor = null;
         _context?.Dispose();
         _weights?.Dispose();
