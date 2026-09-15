@@ -47,6 +47,11 @@ internal sealed class AiBrain : IDisposable
         var input = text.Trim();
         var lower = input.ToLowerInvariant();
 
+        // Conversas determinísticas não devem passar pelo Transformer autoregressivo.
+        // Isso mantém respostas básicas instantâneas e evita gastar CPU desnecessariamente.
+        if (IsImmediateConversation(lower))
+            return Task.FromResult<BrainDecision?>(CreateImmediateDecision(input, lower));
+
         if (IsKnowledgeQuestion(lower))
             return Task.FromResult<BrainDecision?>(CreateKnowledgeDecision(input));
         if (IsTrainingStatusQuestion(lower))
@@ -70,9 +75,6 @@ internal sealed class AiBrain : IDisposable
             ? GenerateResponse(input, lower)
             : "Entendi o objetivo. Vou executar o próximo passo e verificar o resultado.";
 
-        if (lower is "oi" or "olá" or "ola" or "bom dia" or "boa tarde" or "boa noite")
-            d.Response = "Olá. Eu sou a LUNA. Meu cérebro Transformer nativo está funcionando localmente no computador.";
-
         lock (_sync)
         {
             _history.Add((input, d.Response));
@@ -80,6 +82,38 @@ internal sealed class AiBrain : IDisposable
             _last = d;
         }
         return Task.FromResult<BrainDecision?>(d);
+    }
+
+    private static bool IsImmediateConversation(string text)
+    {
+        return text is "quem é você?" or "quem é você" or "quem e você?" or "quem e você" or
+            "o que você é?" or "o que você é" or "o que voce e?" or "o que voce e" or
+            "como você funciona?" or "como você funciona" or "como voce funciona?" or "como voce funciona" or
+            "obrigado" or "obrigada" or "teste" or "testando";
+    }
+
+    private BrainDecision CreateImmediateDecision(string input, string lower)
+    {
+        var response = GenerateResponse(input, lower);
+        var d = new BrainDecision
+        {
+            Intent = "conversar",
+            Goal = input,
+            Interpretation = "Mensagem conversacional que possui resposta local determinística.",
+            Plan = new() { "Identificar resposta conhecida", "Responder imediatamente" },
+            RelevantContext = new(),
+            Actions = new(),
+            MemoryUpdates = new(),
+            Response = response,
+            Completed = true
+        };
+        lock (_sync)
+        {
+            _history.Add((input, response));
+            while (_history.Count > 20) _history.RemoveAt(0);
+            _last = d;
+        }
+        return d;
     }
 
     private BrainDecision CreateKnowledgeDecision(string input)
@@ -159,7 +193,7 @@ internal sealed class AiBrain : IDisposable
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         if (text.Contains("o que você sabe") || text.Contains("o que voce sabe") || text.Contains("o que sabe sobre") || text.Contains("o que voce conhece") || text.Contains("o que você conhece") ||
-            text.Contains("fale sobre") || text.Contains("explique ") || text.Contains("defina ") || text.Contains("quem foi ") || text.Contains("quem é ") || text.Contains("quem e ") ||
+            text.Contains("fale sobre") || text.Contains("explique ") || text.Contains("defina ") || text.Contains("quem foi ") ||
             text.Contains("onde fica ") || text.Contains("por que ") || text.Contains("porque ") || text.Contains("como funciona ") || text.Contains("o que é ") || text.Contains("o que e ")) return true;
         return text.StartsWith("pesquise ") || text.StartsWith("pesquisa ") || text.StartsWith("procure ") || text.StartsWith("busque ");
     }
@@ -182,7 +216,6 @@ internal sealed class AiBrain : IDisposable
             };
         }
 
-        // Give immediate, explicit feedback before the background task starts network I/O.
         _internetTraining.ShowTrainingRequested();
 
         _ = Task.Run(async () =>
@@ -216,7 +249,7 @@ internal sealed class AiBrain : IDisposable
 
     private string GenerateResponse(string input, string lower)
     {
-        if (lower.Contains("quem é você") || lower.Contains("quem e você") || lower.Contains("o que você é")) return "Eu sou a LUNA, uma IA local construída para este computador. Meu cérebro Transformer é próprio e os pesos ficam na máquina.";
+        if (lower.Contains("quem é você") || lower.Contains("quem e você") || lower.Contains("o que você é") || lower.Contains("o que voce e")) return "Eu sou a LUNA, uma IA local construída para este computador. Meu cérebro Transformer é próprio e os pesos ficam na máquina.";
         if (lower.Contains("como você funciona") || lower.Contains("como voce funciona")) return "Eu observo o computador, interpreto o objetivo, planejo, ajo, verifico o resultado e registro aprendizados operacionais. O núcleo neural é executado localmente.";
         if (lower.Contains("obrigado") || lower.Contains("obrigada")) return "Por nada. Vamos continuar.";
         if (lower.Contains("teste") || lower.Contains("testando")) return "Teste recebido. Meu cérebro neural nativo está respondendo.";
