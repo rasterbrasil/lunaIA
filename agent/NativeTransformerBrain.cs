@@ -6,12 +6,13 @@ namespace LunaPC;
 /// <summary>
 /// From-scratch decoder-style Transformer core.
 /// No external model, weights, runtime or AI service is used.
-/// The current training stage learns the output head locally from the seed corpus;
-/// the Transformer stack itself is fully native and ready for progressive full-weight training.
+/// This stage trains the output head locally from the seed corpus while the complete
+/// Transformer stack is native and ready for progressive full-weight backpropagation.
 /// </summary>
 internal sealed class NativeTransformerBrain
 {
-    private const int Vocab = 128;
+    private const string Vocabulary = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ0123456789.,!?;:-_()[]{}'/\\\"@#$%&*+=<>|\n\r";
+    private const int Vocab = 118;
     private const int ModelWidth = 128;
     private const int Heads = 4;
     private const int Layers = 4;
@@ -26,10 +27,6 @@ internal sealed class NativeTransformerBrain
     private readonly float[] _bias = new float[Vocab];
     private readonly Random _random = new(20260915);
     private bool _trained;
-
-    // Deliberately fixed, compact Unicode-aware character vocabulary.
-    // Unknown characters are normalized to a space so generation can never emit invalid UTF-8 bytes.
-    private const string Vocabulary = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZáàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ0123456789.,!?;:-_()[]{}'/\\\"@#$%&*+=<>|\n\r";
 
     public NativeTransformerBrain(string dataDirectory)
     {
@@ -54,7 +51,10 @@ internal sealed class NativeTransformerBrain
 
         for (var p = 0; p < MaxSequence; p++)
             for (var j = 0; j < ModelWidth; j++)
-                _positionEmbedding[p, j] = MathF.Sin(p / MathF.Pow(10000f, (2f * (j / 2)) / ModelWidth));
+            {
+                var angle = p / MathF.Pow(10000f, (2f * (j / 2)) / ModelWidth);
+                _positionEmbedding[p, j] = (j % 2 == 0) ? MathF.Sin(angle) : MathF.Cos(angle);
+            }
 
         foreach (var layer in _layers)
         {
@@ -75,8 +75,6 @@ internal sealed class NativeTransformerBrain
 
         lock (_sync)
         {
-            // Local teacher-forcing stage. It trains the Transformer output head from scratch,
-            // while preserving the complete decoder stack for the next full-backprop stage.
             var context = Math.Min(96, MaxSequence);
             var step = Math.Max(1, context / 4);
             for (var epoch = 0; epoch < Math.Max(1, epochs); epoch++)
@@ -192,14 +190,20 @@ internal sealed class NativeTransformerBrain
 
             var norm2 = new float[length, ModelWidth];
             for (var t = 0; t < length; t++) LayerNorm(residual, t, layer.Norm2, norm2, t);
+            var ff = new float[length, FeedForward];
+            for (var t = 0; t < length; t++)
+                for (var j = 0; j < FeedForward; j++)
+                {
+                    var a = 0f;
+                    for (var k = 0; k < ModelWidth; k++) a += norm2[t, k] * layer.F1[k, j];
+                    ff[t, j] = 0.5f * a * (1f + MathF.Tanh(0.79788456f * (a + 0.044715f * a * a * a)));
+                }
+
             for (var t = 0; t < length; t++)
                 for (var h = 0; h < ModelWidth; h++)
                 {
-                    var a = 0f;
-                    for (var k = 0; k < ModelWidth; k++) a += norm2[t, k] * layer.F1[k, h];
-                    var gelu = 0.5f * a * (1f + MathF.Tanh(0.79788456f * (a + 0.044715f * a * a * a)));
                     var b = 0f;
-                    for (var k = 0; k < FeedForward; k++) b += (k == h ? gelu : 0f) * layer.F2[k, h];
+                    for (var k = 0; k < FeedForward; k++) b += ff[t, k] * layer.F2[k, h];
                     x[t, h] = residual[t, h] + b;
                 }
         }
@@ -245,10 +249,7 @@ internal sealed class NativeTransformerBrain
         return IndexOf(' ');
     }
 
-    private static int[] Encode(string text)
-    {
-        return text.Select(c => IndexOf(c)).ToArray();
-    }
+    private static int[] Encode(string text) => text.Select(IndexOf).ToArray();
 
     private static string Decode(IEnumerable<int> ids)
     {
@@ -256,9 +257,7 @@ internal sealed class NativeTransformerBrain
         foreach (var id in ids)
         {
             var safe = Math.Clamp(id, 0, Vocab - 1);
-            var c = Vocabulary[safe];
-            if (c == '\0') continue;
-            sb.Append(c);
+            sb.Append(Vocabulary[safe]);
         }
         return sb.ToString().Trim();
     }
@@ -266,7 +265,7 @@ internal sealed class NativeTransformerBrain
     private static int IndexOf(char c)
     {
         var index = Vocabulary.IndexOf(c);
-        return index >= 0 && index < Vocab ? index : 0;
+        return index >= 0 ? index : 0;
     }
 
     private float NextWeight(float scale) => (float)(_random.NextDouble() * 2d - 1d) * scale;
@@ -279,13 +278,7 @@ internal sealed class NativeTransformerBrain
 
     private void Save()
     {
-        var data = new TransformerWeights
-        {
-            Trained = _trained,
-            TokenEmbedding = Flatten(_tokenEmbedding),
-            Output = Flatten(_output),
-            Bias = _bias
-        };
+        var data = new TransformerWeights { Trained = _trained, TokenEmbedding = Flatten(_tokenEmbedding), Output = Flatten(_output), Bias = _bias };
         File.WriteAllText(_weightsPath, JsonSerializer.Serialize(data));
     }
 
