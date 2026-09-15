@@ -58,7 +58,9 @@ internal sealed class LunaChatForm : Form
     private readonly Label _brainState;
     private readonly BrainPanel _brain;
     private readonly System.Windows.Forms.Timer _pulse;
+    private readonly CancellationTokenSource _lifetimeCts = new();
     private int _pulseStep;
+    private bool _closing;
 
     private static readonly Color Background = Color.FromArgb(7, 11, 20);
     private static readonly Color Panel = Color.FromArgb(12, 18, 31);
@@ -98,25 +100,66 @@ internal sealed class LunaChatForm : Form
         _input.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter && !e.Shift) { e.SuppressKeyPress = true; await SubmitAsync(); } };
         Shown += (_, _) => { AppendLuna("Olá. Eu sou a LUNA IA.\n\nMeu núcleo local está ativo. Eu observo, interpreto, decido, executo e verifico."); _input.Focus(); };
         _pulse = new System.Windows.Forms.Timer { Interval = 90 };
-        _pulse.Tick += (_, _) => { _pulseStep = (_pulseStep + 1) % 100; _brain.Pulse = _pulseStep; _brain.Invalidate(); };
+        _pulse.Tick += (_, _) => { if (_closing || IsDisposed || Disposing) return; _pulseStep = (_pulseStep + 1) % 100; _brain.Pulse = _pulseStep; _brain.Invalidate(); };
         _pulse.Start();
     }
 
-    public void SendInitial(string text) { _input.Text = text; _ = SubmitAsync(); }
+    public void SendInitial(string text) { if (_closing || IsDisposed || Disposing) return; _input.Text = text; _ = SubmitAsync(); }
 
     private async Task SubmitAsync()
     {
+        if (_closing || IsDisposed || Disposing) return;
         var text = _input.Text.Trim(); if (string.IsNullOrWhiteSpace(text) || !_send.Enabled) return;
         AppendUser(text); _input.Clear(); _send.Enabled = false; _input.Enabled = false;
         _status.Text = "●  LUNA IA RACIOCINANDO"; _status.ForeColor = Accent; _brainState.Text = "OBSERVANDO • INTERPRETANDO • DECIDINDO"; _brain.Active = true;
-        try { var result = await _core.ProcessAsync(text); AppendLuna(result.Text); _status.Text = result.Executed ? "●  AÇÃO VERIFICADA" : "●  LUNA IA ONLINE"; _brainState.Text = result.Executed ? "EXECUÇÃO + VERIFICAÇÃO CONCLUÍDAS" : "AGUARDANDO PRÓXIMO OBJETIVO"; }
-        catch (Exception ex) { AppendLuna("Erro interno controlado: " + ex.Message); _status.Text = "●  ERRO CONTROLADO"; _status.ForeColor = Color.Orange; }
-        finally { _brain.Active = false; _send.Enabled = true; _input.Enabled = true; _input.Focus(); }
+        try
+        {
+            var result = await _core.ProcessAsync(text, _lifetimeCts.Token);
+            if (_closing || IsDisposed || Disposing || _conversation.IsDisposed || _conversation.Disposing) return;
+            AppendLuna(result.Text); _status.Text = result.Executed ? "●  AÇÃO VERIFICADA" : "●  LUNA IA ONLINE"; _brainState.Text = result.Executed ? "EXECUÇÃO + VERIFICAÇÃO CONCLUÍDAS" : "AGUARDANDO PRÓXIMO OBJETIVO";
+        }
+        catch (OperationCanceledException)
+        {
+            if (!_closing && !IsDisposed && !Disposing) { _status.Text = "●  LUNA IA ONLINE"; _brainState.Text = "TAREFA INTERROMPIDA"; }
+        }
+        catch (Exception ex)
+        {
+            if (!_closing && !IsDisposed && !Disposing) { AppendLuna("Erro interno controlado: " + ex.Message); _status.Text = "●  ERRO CONTROLADO"; _status.ForeColor = Color.Orange; }
+        }
+        finally
+        {
+            if (_closing || IsDisposed || Disposing) return;
+            _brain.Active = false; _send.Enabled = true; _input.Enabled = true; _input.Focus();
+        }
     }
 
-    private void AppendUser(string text) { _conversation.SelectionColor = Accent2; _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold); _conversation.AppendText("VOCÊ\n"); _conversation.SelectionColor = TextColor; _conversation.SelectionFont = new Font("Segoe UI", 10.5F); _conversation.AppendText(text + "\n\n"); _conversation.SelectionStart = _conversation.TextLength; _conversation.ScrollToCaret(); }
-    private void AppendLuna(string text) { _conversation.SelectionColor = Accent; _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold); _conversation.AppendText("LUNA IA\n"); _conversation.SelectionColor = TextColor; _conversation.SelectionFont = new Font("Segoe UI", 10.5F); _conversation.AppendText(text + "\n\n"); _conversation.SelectionStart = _conversation.TextLength; _conversation.ScrollToCaret(); }
-    protected override void OnFormClosed(FormClosedEventArgs e) { _pulse.Stop(); _pulse.Dispose(); base.OnFormClosed(e); }
+    private bool CanWriteConversation()
+        => !_closing && !IsDisposed && !Disposing && !_conversation.IsDisposed && !_conversation.Disposing && _conversation.IsHandleCreated;
+
+    private void AppendUser(string text)
+    {
+        if (!CanWriteConversation()) return;
+        try { _conversation.SelectionColor = Accent2; _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold); _conversation.AppendText("VOCÊ\n"); _conversation.SelectionColor = TextColor; _conversation.SelectionFont = new Font("Segoe UI", 10.5F); _conversation.AppendText(text + "\n\n"); _conversation.SelectionStart = _conversation.TextLength; _conversation.ScrollToCaret(); } catch (ObjectDisposedException) { }
+    }
+
+    private void AppendLuna(string text)
+    {
+        if (!CanWriteConversation()) return;
+        try { _conversation.SelectionColor = Accent; _conversation.SelectionFont = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold); _conversation.AppendText("LUNA IA\n"); _conversation.SelectionColor = TextColor; _conversation.SelectionFont = new Font("Segoe UI", 10.5F); _conversation.AppendText(text + "\n\n"); _conversation.SelectionStart = _conversation.TextLength; _conversation.ScrollToCaret(); } catch (ObjectDisposedException) { }
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        _closing = true;
+        _lifetimeCts.Cancel();
+        _pulse.Stop();
+        base.OnFormClosing(e);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        _pulse.Stop(); _pulse.Dispose(); _lifetimeCts.Dispose(); base.OnFormClosed(e);
+    }
 }
 
 internal sealed class BrainLogo : Control
