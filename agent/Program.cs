@@ -128,8 +128,10 @@ internal sealed class LunaChatForm : Form
         }
         finally
         {
-            if (_closing || IsDisposed || Disposing) return;
-            _brain.Active = false; _send.Enabled = true; _input.Enabled = true; _input.Focus();
+            if (!_closing && !IsDisposed && !Disposing)
+            {
+                _brain.Active = false; _send.Enabled = true; _input.Enabled = true; _input.Focus();
+            }
         }
     }
 
