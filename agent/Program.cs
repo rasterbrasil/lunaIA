@@ -9,6 +9,9 @@ internal static class Program
     [STAThread]
     static void Main()
     {
+        using var mutex = new Mutex(true, "LunaPC.SingleInstance.2026", out var createdNew);
+        if (!createdNew) return;
+
         ApplicationConfiguration.Initialize();
         using var app = new LunaAgentContext();
         Application.Run();
@@ -36,6 +39,7 @@ internal sealed class LunaAgentContext : ApplicationContext
     private readonly ActionEngine _actions;
     private readonly OperationalMemory _memory;
     private readonly AutonomyEngine _autonomy;
+    private Timer? _startupTimer;
     private int _listening;
 
     public LunaAgentContext()
@@ -67,6 +71,18 @@ internal sealed class LunaAgentContext : ApplicationContext
                 ? "LUNA PC iniciada. Meu cérebro, minha percepção, minha ação e minha memória locais estão prontos."
                 : "LUNA PC iniciada. Meu cérebro, minha percepção, minha ação e minha memória estão prontos. A voz neural ainda precisa ser preparada.");
         EnableStartup();
+
+        // A versão anterior funcionava como aplicativo de bandeja e não abria uma janela visível.
+        // Agora a conversa é apresentada automaticamente após o loop de mensagens iniciar.
+        _startupTimer = new Timer { Interval = 350 };
+        _startupTimer.Tick += (_, _) =>
+        {
+            _startupTimer?.Stop();
+            _startupTimer?.Dispose();
+            _startupTimer = null;
+            ShowTextTest();
+        };
+        _startupTimer.Start();
     }
 
     private bool ConfirmAction(string description)
@@ -188,6 +204,8 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        _startupTimer?.Stop();
+        _startupTimer?.Dispose();
         UnregisterHotKey(_hotkeyWindow.Handle, HotkeyId);
         _hotkeyWindow.DestroyHandle();
         _tray.Visible = false;
