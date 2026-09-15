@@ -1,17 +1,20 @@
 namespace LunaPC;
 
 /// <summary>
-/// LUNA's local cognitive layer. No Ollama, no external model, no API.
+/// LUNA's local cognitive layer. No Ollama, no external model, no AI API.
 /// The language core is a Transformer implemented directly in C# and trained locally.
+/// InternetTrainingService supplies openly licensed training data; it does not provide inference.
 /// The executive layer remains responsible for validated Windows actions and verification.
 /// </summary>
 internal sealed class AiBrain : IDisposable
 {
     private readonly NativeTransformerBrain _neural;
+    private readonly InternetTrainingService _internetTraining;
     private readonly object _sync = new();
     private readonly List<(string User, string Assistant)> _history = new();
     private BrainDecision? _last;
     private bool _disposed;
+    private int _internetTrainingRunning;
 
     public OperationalMemory Memory { get; }
     public string Model => "LUNA-NATIVE-TRANSFORMER-0.3-FULL-BACKPROP";
@@ -25,6 +28,7 @@ internal sealed class AiBrain : IDisposable
         Directory.CreateDirectory(data);
         Memory = new OperationalMemory();
         _neural = new NativeTransformerBrain(data);
+        _internetTraining = new InternetTrainingService(data);
         if (!_neural.IsTrained)
             _neural.Train(SeedCorpus, epochs: 1, learningRate: 0.0008f);
     }
@@ -40,6 +44,10 @@ internal sealed class AiBrain : IDisposable
 
         var input = text.Trim();
         var lower = input.ToLowerInvariant();
+
+        if (IsInternetTrainingCommand(lower))
+            return Task.FromResult<BrainDecision?>(StartInternetTraining(input, ct));
+
         var memory = Memory.ForBrain(input, 20, 8);
         var d = new BrainDecision
         {
@@ -70,6 +78,51 @@ internal sealed class AiBrain : IDisposable
         }
         return Task.FromResult<BrainDecision?>(d);
     }
+
+    private BrainDecision StartInternetTraining(string input, CancellationToken ct)
+    {
+        if (Interlocked.CompareExchange(ref _internetTrainingRunning, 1, 0) != 0)
+        {
+            return new BrainDecision
+            {
+                Intent = "treinar_internet",
+                Goal = input,
+                Interpretation = "O treinamento pela internet já está em execução.",
+                Plan = new() { "Coletar dados licenciados", "Limpar e deduplicar", "Treinar o Transformer", "Salvar os pesos" },
+                Response = "O treinamento pela internet já está em andamento. Estou mantendo o processo em segundo plano.",
+                Completed = false
+            };
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await _internetTraining.CollectAndTrainAsync(_neural, ct);
+                Memory.RecordEpisode("treinamento com dados públicos da internet", "coletar e treinar Transformer", $"{result.Documents} documentos; {result.TrainingChunks} blocos treinados", "usar corpus público licenciado e atualizar pesos locais", result.Documents > 0, 0.95f, new[] { "treinamento", "internet", "wikipedia" });
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Memory.RecordEpisode("treinamento com dados públicos da internet", "coletar e treinar Transformer", "falha: " + ex.Message, "repetir após verificar conectividade", false, 0.85f, new[] { "treinamento", "internet", "erro" });
+            }
+            finally { Interlocked.Exchange(ref _internetTrainingRunning, 0); }
+        });
+
+        return new BrainDecision
+        {
+            Intent = "treinar_internet",
+            Goal = input,
+            Interpretation = "O usuário solicitou treinamento do cérebro usando dados públicos da internet.",
+            Plan = new() { "Coletar dados de fonte pública licenciada", "Limpar e deduplicar o corpus", "Treinar os pesos completos do Transformer", "Salvar checkpoint local", "Registrar o resultado" },
+            Response = "Iniciei o treinamento com dados públicos da internet em segundo plano. O cérebro continua sendo totalmente local; a internet está sendo usada somente como fonte de dados.",
+            Completed = false
+        };
+    }
+
+    private static bool IsInternetTrainingCommand(string text)
+        => (text.Contains("treine") || text.Contains("treinar") || text.Contains("treinamento")) &&
+           (text.Contains("internet") || text.Contains("web") || text.Contains("online") || text.Contains("wikipedia"));
 
     private string GenerateResponse(string input, string lower)
     {
@@ -172,7 +225,11 @@ internal sealed class AiBrain : IDisposable
 
     public void ClearHistory() { lock (_sync) { _history.Clear(); _last = null; } }
 
-    public void Dispose() { _disposed = true; }
+    public void Dispose()
+    {
+        _disposed = true;
+        _internetTraining.Dispose();
+    }
 
     private const string SeedCorpus = """
 LUNA é uma inteligência artificial local construída para operar um computador Windows.
