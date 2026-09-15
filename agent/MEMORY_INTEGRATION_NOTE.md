@@ -1,0 +1,1 @@
+Nível 2: LunaMemory.cs já persiste memória estruturada localmente. A integração do contexto da memória ao motor de linguagem será aplicada na próxima alteração do núcleo.
