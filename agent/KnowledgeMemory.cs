@@ -5,8 +5,9 @@ using System.Text.RegularExpressions;
 namespace LunaPC;
 
 /// <summary>
-/// Phase 2.3: persistent local knowledge memory built from the internet corpus.
-/// Retrieval is deterministic and local: no external AI service is used.
+/// Phase 2.3/2.4: persistent local knowledge memory with an inverted index.
+/// The corpus is scanned only when it changes; normal questions query the index,
+/// not the full JSONL corpus. No external AI service is used.
 /// </summary>
 internal sealed class KnowledgeMemory
 {
@@ -22,45 +23,60 @@ internal sealed class KnowledgeMemory
     };
 
     private readonly string _corpusPath;
+    private readonly string _indexPath;
     private readonly object _sync = new();
-    private List<KnowledgeDocument>? _cache;
-    private DateTime _cacheWriteTimeUtc;
+    private KnowledgeIndex? _index;
 
     public KnowledgeMemory(string brainDirectory)
     {
+        Directory.CreateDirectory(brainDirectory);
         _corpusPath = Path.Combine(brainDirectory, "internet-corpus-v1.jsonl");
+        _indexPath = Path.Combine(brainDirectory, "knowledge-index-v1.json");
     }
 
-    public int DocumentCount => LoadDocuments().Count;
+    public int DocumentCount => EnsureIndex().Documents.Count;
 
+    /// <summary>
+    /// Searches only indexed candidate passages. If the corpus changed, the index is
+    /// rebuilt once and persisted; subsequent queries do not read/scan the corpus file.
+    /// </summary>
     public IReadOnlyList<KnowledgeMatch> Search(string query, int maxResults = 5)
     {
+        var index = EnsureIndex();
         var terms = Tokenize(query);
         if (terms.Count == 0) return Array.Empty<KnowledgeMatch>();
 
-        var results = new List<KnowledgeMatch>();
-        var seenPassages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var document in LoadDocuments())
+        var candidateIds = new HashSet<int>();
+        foreach (var term in terms)
         {
-            var normalizedTitle = Normalize(document.Title);
+            if (index.Postings.TryGetValue(term, out var ids))
+                foreach (var id in ids) candidateIds.Add(id);
+
+            // Small Portuguese morphology expansion. The index stores prefixes for
+            // title matching, so "brasil" can also find "brasileiro/brasileira" titles.
+            if (term.Length >= 5 && index.TitlePrefixPostings.TryGetValue(term, out var titleIds))
+                foreach (var id in titleIds) candidateIds.Add(id);
+        }
+
+        if (candidateIds.Count == 0) return Array.Empty<KnowledgeMatch>();
+
+        var results = new List<KnowledgeMatch>();
+        foreach (var id in candidateIds)
+        {
+            if (id < 0 || id >= index.Passages.Count) continue;
+            var passage = index.Passages[id];
+            var normalizedTitle = Normalize(passage.Title);
+            var normalizedText = passage.NormalizedText;
             var exactTitleHits = terms.Count(term => ExactTitleMatch(normalizedTitle, term));
             var fuzzyTitleHits = terms.Count(term => FuzzyTitleMatch(normalizedTitle, term));
+            var coverage = terms.Count(t => ContainsTopic(normalizedText, t));
 
-            foreach (var passage in SplitPassages(document.Text))
-            {
-                var normalized = Normalize(passage);
-                var score = Score(terms, normalized, normalizedTitle, exactTitleHits, fuzzyTitleHits);
-                if (score <= 0) continue;
+            if (terms.Count == 1 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage == 0) continue;
+            if (terms.Count >= 2 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage < 2) continue;
 
-                var coverage = terms.Count(t => ContainsTopic(normalized, t));
-                if (terms.Count == 1 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage == 0) continue;
-                if (terms.Count >= 2 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage < 2) continue;
-
-                var key = document.Title + "\n" + passage.Trim();
-                if (seenPassages.Add(key))
-                    results.Add(new KnowledgeMatch(document.Title, passage.Trim(), score));
-            }
+            var score = Score(terms, normalizedText, normalizedTitle, exactTitleHits, fuzzyTitleHits);
+            if (score > 0)
+                results.Add(new KnowledgeMatch(passage.Title, passage.Text, score));
         }
 
         return results
@@ -84,36 +100,114 @@ internal sealed class KnowledgeMemory
         return sb.ToString().Trim();
     }
 
-    private List<KnowledgeDocument> LoadDocuments()
+    private KnowledgeIndex EnsureIndex()
     {
         lock (_sync)
         {
-            if (!File.Exists(_corpusPath)) return _cache = new List<KnowledgeDocument>();
-            var writeTime = File.GetLastWriteTimeUtc(_corpusPath);
-            if (_cache is not null && writeTime == _cacheWriteTimeUtc) return _cache;
+            var corpusTicks = File.Exists(_corpusPath) ? File.GetLastWriteTimeUtc(_corpusPath).Ticks : 0;
+            if (_index is not null && _index.CorpusWriteTicks == corpusTicks) return _index;
 
-            var documents = new List<KnowledgeDocument>();
-            try
+            if (corpusTicks == 0)
             {
-                foreach (var line in File.ReadLines(_corpusPath))
-                {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    try
-                    {
-                        var item = JsonSerializer.Deserialize<CorpusLine>(line);
-                        if (item is null || string.IsNullOrWhiteSpace(item.Title) || string.IsNullOrWhiteSpace(item.Text)) continue;
-                        documents.Add(new KnowledgeDocument(item.Title, item.Text));
-                    }
-                    catch { }
-                }
+                _index = EmptyIndex(0);
+                return _index;
             }
-            catch { }
 
-            _cache = documents;
-            _cacheWriteTimeUtc = writeTime;
-            return documents;
+            if (TryLoadIndex(corpusTicks, out var saved))
+            {
+                _index = saved;
+                return _index;
+            }
+
+            _index = BuildIndex(corpusTicks);
+            SaveIndex(_index);
+            return _index;
         }
     }
+
+    private bool TryLoadIndex(long corpusTicks, out KnowledgeIndex index)
+    {
+        index = EmptyIndex(corpusTicks);
+        try
+        {
+            if (!File.Exists(_indexPath)) return false;
+            var json = File.ReadAllText(_indexPath, Encoding.UTF8);
+            var loaded = JsonSerializer.Deserialize<KnowledgeIndex>(json);
+            if (loaded is null || loaded.CorpusWriteTicks != corpusTicks || loaded.Passages.Count == 0 && loaded.Documents.Count > 0) return false;
+            index = loaded;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private KnowledgeIndex BuildIndex(long corpusTicks)
+    {
+        var documents = new List<KnowledgeDocument>();
+        var passages = new List<IndexedPassage>();
+        var postings = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        var titlePrefixPostings = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+
+        try
+        {
+            foreach (var line in File.ReadLines(_corpusPath, Encoding.UTF8))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    var item = JsonSerializer.Deserialize<CorpusLine>(line);
+                    if (item is null || string.IsNullOrWhiteSpace(item.Title) || string.IsNullOrWhiteSpace(item.Text)) continue;
+                    documents.Add(new KnowledgeDocument(item.Title, item.Text));
+
+                    foreach (var passageText in SplitPassages(item.Text))
+                    {
+                        var id = passages.Count;
+                        var normalizedText = Normalize(passageText);
+                        passages.Add(new IndexedPassage(item.Title, passageText, normalizedText));
+
+                        foreach (var token in Tokenize(item.Title + " " + passageText))
+                            AddPosting(postings, token, id);
+
+                        foreach (var titleToken in Tokenize(item.Title))
+                        {
+                            if (titleToken.Length >= 5)
+                                AddPosting(titlePrefixPostings, titleToken[..Math.Min(7, titleToken.Length)], id);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        return new KnowledgeIndex(corpusTicks, documents, passages, postings, titlePrefixPostings);
+    }
+
+    private void SaveIndex(KnowledgeIndex index)
+    {
+        try
+        {
+            var temp = _indexPath + ".tmp";
+            var options = new JsonSerializerOptions { WriteIndented = false };
+            File.WriteAllText(temp, JsonSerializer.Serialize(index, options), new UTF8Encoding(false));
+            File.Move(temp, _indexPath, true);
+        }
+        catch { }
+    }
+
+    private static void AddPosting(Dictionary<string, List<int>> map, string token, int id)
+    {
+        if (!map.TryGetValue(token, out var list))
+        {
+            list = new List<int>();
+            map[token] = list;
+        }
+        if (list.Count == 0 || list[^1] != id) list.Add(id);
+    }
+
+    private static KnowledgeIndex EmptyIndex(long ticks)
+        => new(ticks, new List<KnowledgeDocument>(), new List<IndexedPassage>(),
+            new Dictionary<string, List<int>>(StringComparer.Ordinal),
+            new Dictionary<string, List<int>>(StringComparer.Ordinal));
 
     private static IEnumerable<string> SplitPassages(string text)
     {
@@ -127,8 +221,6 @@ internal sealed class KnowledgeMemory
 
     private static int Score(List<string> terms, string normalizedText, string normalizedTitle, int exactTitleHits, int fuzzyTitleHits)
     {
-        // Exact subject titles dominate. A question about "Brasil" should rank
-        // an article titled "Brasil" above an article that merely says "brasileira".
         var score = exactTitleHits * 40 + Math.Max(0, fuzzyTitleHits - exactTitleHits) * 10;
         foreach (var term in terms)
         {
@@ -150,7 +242,6 @@ internal sealed class KnowledgeMemory
     private static bool FuzzyTitleMatch(string title, string term)
     {
         if (ExactTitleMatch(title, term)) return true;
-        // Small Portuguese morphological tolerance: brasil -> brasileira/brasileiro.
         return term.Length >= 5 && title.Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Any(word => word.StartsWith(term, StringComparison.Ordinal) && word.Length <= term.Length + 5);
     }
@@ -189,6 +280,13 @@ internal sealed class KnowledgeMemory
 
     private sealed record CorpusLine(string Title, string Text);
     private sealed record KnowledgeDocument(string Title, string Text);
+    private sealed record IndexedPassage(string Title, string Text, string NormalizedText);
+    private sealed record KnowledgeIndex(
+        long CorpusWriteTicks,
+        List<KnowledgeDocument> Documents,
+        List<IndexedPassage> Passages,
+        Dictionary<string, List<int>> Postings,
+        Dictionary<string, List<int>> TitlePrefixPostings);
 }
 
 internal readonly record struct KnowledgeMatch(string Title, string Text, int Score);
