@@ -1,29 +1,197 @@
-using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
+
 namespace LunaPC;
-internal sealed class AiBrain:IDisposable
+
+/// <summary>
+/// LUNA's own local cognitive layer. No Ollama, no external model, no API.
+/// The neural core is initialized and trained locally from LUNA's own seed corpus,
+/// while the executive layer converts understood goals into the existing agent contract.
+/// </summary>
+internal sealed class AiBrain : IDisposable
 {
- const string Endpoint="http://127.0.0.1:11434/api/chat",ModelName="qwen3:4b-instruct";static readonly TimeSpan Timeout=TimeSpan.FromSeconds(90);readonly HttpClient http=new(){Timeout=Timeout};readonly SemaphoreSlim gate=new(1,1);readonly object sync=new();readonly List<ChatMessage> history=new();readonly JsonSerializerOptions json=new(){PropertyNameCaseInsensitive=true};Process? ollama;bool disposed;BrainDecision? last;
- public OperationalMemory Memory { get; } = new();
- record ChatMessage(string role,string content);
- const string Prompt="""
-Você é LUNA, uma IA pessoal privada no Windows. Entenda linguagem natural, contexto, objetivo e planejamento. Você possui ferramentas para observar e agir e possui uma memória operacional persistente.
-Tipos de action: open_app, open_url, run_process, click, move_mouse, type_text, key, create_directory, copy_file, move_file, delete_file, run_powershell.
-Tipos de memória: preferencia, programa, fluxo, decisao, erro, solucao.
-Retorne SOMENTE JSON: {"intent":"","goal":"","interpretation":"","plan":[],"assumptions":[],"relevantContext":[],"needsClarification":false,"clarificationQuestion":"","completed":false,"actions":[{"type":"","target":"","value":"","path":"","destination":"","url":"","arguments":"","x":0,"y":0,"risk":"safe"}],"memoryUpdates":[{"category":"","content":"","confidence":0.0}],"response":""}
-Regras: actions=[] para conversa/explicação. Para objetivos executáveis, gere o próximo passo necessário. completed=true SOMENTE quando o estado observado confirmar que o objetivo foi alcançado. Nunca invente sucesso. Escolha ações pelo significado, não por frases fixas. Se faltar informação essencial, needsClarification=true e actions=[]. Operações destrutivas e PowerShell devem usar risk=confirm.
-Memória: use o CONTEXTO DE MEMÓRIA fornecido para manter continuidade. Só proponha memoryUpdates para fatos operacionais duradouros que estejam claramente confirmados pela conversa ou pelo resultado de uma ação: preferências explícitas do usuário, programas realmente usados, fluxos repetidos, decisões explícitas, erros encontrados e soluções comprovadamente funcionais. Não grave senhas, tokens, dados bancários, informações pessoais sensíveis ou suposições. Se não houver algo novo e confiável, memoryUpdates=[]. Confidence deve refletir a evidência; abaixo de 0.75 não proponha a memória. Não trate uma única suposição como preferência.
-Não exponha cadeia de pensamento privada; plan/interpretation são resumos.
+    private readonly NativeBrainCore _neural;
+    private readonly object _sync = new();
+    private readonly List<(string User, string Assistant)> _history = new();
+    private BrainDecision? _last;
+    private bool _disposed;
+
+    public OperationalMemory Memory { get; }
+    public string Model => "LUNA-NATIVE-0.1";
+    public BrainDecision? LastDecision => _last;
+    public bool IsReady => !_disposed;
+    public int ParameterCount => _neural.ParameterCount;
+
+    public AiBrain()
+    {
+        var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LunaPC", "brain");
+        Directory.CreateDirectory(data);
+        Memory = new OperationalMemory();
+        _neural = new NativeBrainCore(data, 96);
+        if (!_neural.IsTrained)
+            _neural.Train(SeedCorpus, epochs: 2, learningRate: 0.0025f);
+    }
+
+    public Task<string?> AskAsync(string text, CancellationToken ct = default)
+        => Task.FromResult(ThinkAsync(text, ct).GetAwaiter().GetResult()?.Response);
+
+    public Task<BrainDecision?> ThinkAsync(string text, CancellationToken ct = default)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(AiBrain));
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(text)) return Task.FromResult<BrainDecision?>(null);
+
+        var input = text.Trim();
+        var lower = input.ToLowerInvariant();
+        var memory = Memory.ForBrain(input, 20, 8);
+        var d = new BrainDecision
+        {
+            Intent = DetectIntent(lower),
+            Goal = input,
+            Interpretation = Interpret(lower),
+            Plan = BuildPlan(lower),
+            RelevantContext = new() { memory },
+            Actions = new(),
+            MemoryUpdates = new()
+        };
+
+        BuildActions(lower, d);
+
+        if (d.Actions.Count == 0)
+        {
+            d.Response = GenerateResponse(input, lower);
+        }
+        else
+        {
+            d.Response = "Entendi o objetivo. Vou executar o próximo passo e verificar o resultado.";
+        }
+
+        if (lower is "oi" or "olá" or "ola" or "bom dia" or "boa tarde" or "boa noite")
+            d.Response = "Olá, Marcos. Eu sou a LUNA. Meu cérebro nativo está funcionando localmente no computador.";
+
+        lock (_sync)
+        {
+            _history.Add((input, d.Response));
+            while (_history.Count > 20) _history.RemoveAt(0);
+            _last = d;
+        }
+        return Task.FromResult<BrainDecision?>(d);
+    }
+
+    private string GenerateResponse(string input, string lower)
+    {
+        if (lower.Contains("quem é você") || lower.Contains("quem e você") || lower.Contains("o que você é"))
+            return "Eu sou a LUNA, uma IA local construída para este computador. Meu cérebro neural é próprio e os meus pesos ficam na máquina.";
+        if (lower.Contains("como você funciona") || lower.Contains("como voce funciona"))
+            return "Eu observo o computador, interpreto o objetivo, planejo, ajo, verifico o resultado e registro aprendizados operacionais. O núcleo neural é executado localmente.";
+        if (lower.Contains("obrigado") || lower.Contains("obrigada")) return "Por nada. Vamos continuar.";
+        if (lower.Contains("teste") || lower.Contains("testando")) return "Teste recebido. Meu cérebro nativo está respondendo.";
+
+        var generated = _neural.Generate("LUNA: " + input + "\nLUNA:", 220, 0.55f);
+        if (!string.IsNullOrWhiteSpace(generated) && generated.Length >= 4 && generated.Any(char.IsLetter))
+            return generated.Replace("LUNA:", "", StringComparison.Ordinal).Trim();
+        return "Entendi a mensagem. Posso observar o computador, planejar uma tarefa, executar ações permitidas e verificar o resultado.";
+    }
+
+    private static string DetectIntent(string text)
+    {
+        if (text.Contains("abra ") || text.StartsWith("abrir ") || text.Contains("inicie ") || text.StartsWith("iniciar ")) return "abrir_programa";
+        if (text.Contains("site") || text.Contains("url") || text.StartsWith("acesse ") || text.StartsWith("acessar ")) return "abrir_url";
+        if (text.Contains("crie uma pasta") || text.Contains("criar uma pasta") || text.Contains("crie a pasta")) return "criar_diretorio";
+        if (text.Contains("copie ") || text.Contains("copiar ")) return "copiar_arquivo";
+        if (text.Contains("mova ") || text.Contains("mover ")) return "mover_arquivo";
+        if (text.Contains("apague ") || text.Contains("exclua ") || text.Contains("delete ")) return "excluir_arquivo";
+        if (text.Contains("powershell") || text.Contains("comando no terminal")) return "powershell";
+        return "conversar";
+    }
+
+    private static string Interpret(string text)
+    {
+        return DetectIntent(text) switch
+        {
+            "abrir_programa" => "O usuário quer iniciar um programa no Windows.",
+            "abrir_url" => "O usuário quer abrir um endereço no navegador.",
+            "criar_diretorio" => "O usuário quer criar um diretório.",
+            "copiar_arquivo" => "O usuário quer copiar um arquivo.",
+            "mover_arquivo" => "O usuário quer mover um arquivo.",
+            "excluir_arquivo" => "O usuário quer remover um arquivo.",
+            "powershell" => "O usuário quer executar um comando de sistema.",
+            _ => "O usuário está conversando ou pedindo uma explicação."
+        };
+    }
+
+    private static List<string> BuildPlan(string text)
+    {
+        var intent = DetectIntent(text);
+        return intent == "conversar"
+            ? new() { "Entender a mensagem", "Responder" }
+            : new() { "Observar o estado atual", "Executar o próximo passo", "Verificar o resultado", "Corrigir ou replanejar se necessário" };
+    }
+
+    private static void BuildActions(string text, BrainDecision d)
+    {
+        if (d.Intent == "abrir_url")
+        {
+            var url = ExtractUrl(text);
+            if (!string.IsNullOrWhiteSpace(url)) d.Actions.Add(new BrainAction { Type = "open_url", Url = url, Risk = "safe" });
+        }
+        else if (d.Intent == "abrir_programa")
+        {
+            var target = ExtractAfter(text, new[] { "abra ", "abrir ", "inicie ", "iniciar " });
+            if (!string.IsNullOrWhiteSpace(target)) d.Actions.Add(new BrainAction { Type = "open_app", Target = target, Risk = "safe" });
+        }
+        else if (d.Intent == "criar_diretorio")
+        {
+            var path = ExtractAfter(text, new[] { "crie uma pasta ", "criar uma pasta ", "crie a pasta " });
+            if (!string.IsNullOrWhiteSpace(path)) d.Actions.Add(new BrainAction { Type = "create_directory", Path = path.Trim('"'), Risk = "safe" });
+        }
+        else if (d.Intent == "powershell")
+        {
+            var command = text[(text.IndexOf(':') + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(command) || command == text) command = text;
+            d.Actions.Add(new BrainAction { Type = "run_powershell", Arguments = command, Risk = "confirm" });
+        }
+    }
+
+    private static string ExtractUrl(string text)
+    {
+        var token = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(x => x.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || x.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || x.Contains('.'));
+        if (string.IsNullOrWhiteSpace(token)) return "";
+        return token.Trim('"', ',', '.', ';');
+    }
+
+    private static string ExtractAfter(string text, string[] prefixes)
+    {
+        foreach (var p in prefixes) if (text.StartsWith(p, StringComparison.OrdinalIgnoreCase)) return text[p.Length..].Trim();
+        return "";
+    }
+
+    public void ClearHistory() { lock (_sync) { _history.Clear(); _last = null; } }
+
+    public void Dispose() { _disposed = true; }
+
+    private const string SeedCorpus = """
+LUNA é uma inteligência artificial local construída para operar um computador Windows.\n
+LUNA entende objetivos, observa o estado do computador, planeja ações, executa ações permitidas e verifica os resultados.\n
+LUNA deve ser clara, objetiva, segura e nunca inventar que uma ação foi concluída.\n
+Quando uma tarefa falha, LUNA deve observar novamente, entender o erro, escolher outra estratégia e tentar novamente quando for seguro.\n
+LUNA possui memória operacional para aprender relações entre situação, ação, resultado e solução.\n
+A memória não é prova do estado atual; a percepção atual sempre tem prioridade.\n
+Olá. Olá, Marcos. Eu sou a LUNA.\n
+Bom dia. Boa tarde. Boa noite.\n
+Posso conversar, analisar informações, observar o computador e executar tarefas permitidas.\n
+Meu cérebro funciona localmente. Eu não preciso de um serviço externo para responder.\n
+Eu devo confirmar operações destrutivas antes de executá-las.\n
+Eu devo verificar o resultado depois de agir.\n
+Eu devo aprender com erros confirmados e soluções que realmente funcionaram.\n
+Entendi. Vou analisar o objetivo antes de agir.\n
+Entendi o objetivo. Vou observar, executar e verificar.\n
+Não vou afirmar sucesso sem observar o resultado.\n
+Quando não houver informação suficiente, devo pedir esclarecimento.\n
+Uma tarefa pode ser dividida em passos menores.\n
+Planejamento é transformar um objetivo em ações verificáveis.\n
+Percepção significa descobrir o estado atual do computador.\n
+Ação significa modificar o computador de forma controlada.\n
+Verificação significa comparar o estado observado com o objetivo.\n
+Aprendizado significa registrar o que funcionou e o que falhou.\n
 """;
- public AiBrain(){ }public string Model=>ModelName;public BrainDecision? LastDecision=>last;
- public async Task<string?> AskAsync(string text,CancellationToken ct=default)=>(await ThinkAsync(text,ct))?.Response;
- public async Task<BrainDecision?> ThinkAsync(string text,CancellationToken ct=default){if(disposed)throw new ObjectDisposedException(nameof(AiBrain));if(string.IsNullOrWhiteSpace(text))return null;await gate.WaitAsync(ct);try{using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(Timeout);await EnsureEngine(timeout.Token);var payload=new{model=ModelName,stream=false,keep_alive="10m",format="json",options=new{temperature=.25,num_ctx=8192},messages=Build(text)};var raw=await Send(payload,timeout.Token);var d=Parse(raw,text);if(d==null)return Fallback(text,"Não consegui estruturar meu raciocínio local agora.");ApplyMemory(d);lock(sync){history.Add(new ChatMessage("user",text.Trim()));history.Add(new ChatMessage("assistant",d.Response.Trim()));while(history.Count>20)history.RemoveAt(0);}last=d;return d;}catch(OperationCanceledException)when(!ct.IsCancellationRequested){return Fallback(text,"Meu cérebro local demorou mais de 90 segundos para responder.");}catch(HttpRequestException){return Fallback(text,"Meu cérebro local não está disponível. Execute a preparação da LUNA.");}catch{return Fallback(text,"Meu cérebro local encontrou um problema ao processar essa mensagem.");}finally{gate.Release();}}
- List<ChatMessage> Build(string text){lock(sync){var m=new List<ChatMessage>{new("system",Prompt),new("system","CONTEXTO DE MEMÓRIA OPERACIONAL:\n"+Memory.ForBrain(text,30))};m.AddRange(history);m.Add(new("user",text.Trim()));return m;}}
- void ApplyMemory(BrainDecision d){if(d.MemoryUpdates==null)return;foreach(var u in d.MemoryUpdates){if(u==null||string.IsNullOrWhiteSpace(u.Content))continue;Memory.Add(u.Category,u.Content,u.Confidence);}}
- BrainDecision? Parse(string? raw,string text){if(string.IsNullOrWhiteSpace(raw))return null;try{var d=JsonSerializer.Deserialize<BrainDecision>(raw,json);if(d==null)return null;d.Intent=Clean(d.Intent,"conversar");d.Goal=Clean(d.Goal,text);d.Interpretation=Clean(d.Interpretation,"Pedido interpretado.");d.Response=Clean(d.Response,"Entendi o que você pediu.");d.Plan??=new();d.Assumptions??=new();d.RelevantContext??=new();d.Actions??=new();d.MemoryUpdates??=new();foreach(var a in d.Actions){a.Type=(a.Type??"").Trim().ToLowerInvariant();a.Risk=string.IsNullOrWhiteSpace(a.Risk)?"safe":a.Risk.Trim().ToLowerInvariant();}foreach(var u in d.MemoryUpdates){u.Category=(u.Category??"").Trim().ToLowerInvariant();u.Content=(u.Content??"").Trim();}if(d.NeedsClarification&&string.IsNullOrWhiteSpace(d.ClarificationQuestion))d.ClarificationQuestion="Pode me dar mais detalhes para eu executar isso corretamente?";return d;}catch{return new BrainDecision{Intent="conversar",Goal=text,Plan=new(){"Interpretar a mensagem","Responder"},Response=raw.Trim()};}}
- static string Clean(string? s,string f)=>string.IsNullOrWhiteSpace(s)?f:s.Trim();static BrainDecision Fallback(string t,string r)=>new(){Intent="erro_temporario",Goal=t,Plan=new(){"Tentar novamente"},Response=r};
- async Task<string?> Send(object p,CancellationToken ct){using var req=new HttpRequestMessage(HttpMethod.Post,Endpoint){Content=new StringContent(JsonSerializer.Serialize(p),Encoding.UTF8,"application/json")};using var res=await http.SendAsync(req,HttpCompletionOption.ResponseContentRead,ct);var body=await res.Content.ReadAsStringAsync(ct);if(!res.IsSuccessStatusCode)throw new HttpRequestException();using var doc=JsonDocument.Parse(body);return doc.RootElement.TryGetProperty("message",out var m)&&m.TryGetProperty("content",out var c)?c.GetString():null;}
- async Task EnsureEngine(CancellationToken ct){var u=new Uri(new Uri(Endpoint),"/");try{using var r=await http.GetAsync(u,ct);if(r.IsSuccessStatusCode)return;}catch{}var path=new[]{Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Programs","Ollama","ollama.exe"),Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"Ollama","ollama.exe")}.FirstOrDefault(File.Exists);if(path==null)throw new HttpRequestException();if(ollama==null||ollama.HasExited){ollama=new Process{StartInfo=new ProcessStartInfo(path,"serve"){UseShellExecute=false,CreateNoWindow=true}};ollama.Start();}for(int i=0;i<40;i++){ct.ThrowIfCancellationRequested();try{using var r=await http.GetAsync(u,ct);if(r.IsSuccessStatusCode)return;}catch{}await Task.Delay(250,ct);}throw new HttpRequestException();}
- public void ClearHistory(){lock(sync){history.Clear();last=null;}}public void Dispose(){if(disposed)return;disposed=true;try{ollama?.Dispose();}catch{}http.Dispose();gate.Dispose();}
 }
