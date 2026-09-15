@@ -16,6 +16,12 @@ internal sealed class LunaIntelligentAgent : IDisposable
         _fallback = new LunaCore();
     }
 
+    public async Task WarmupAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(LunaIntelligentAgent));
+        await _language.WarmupAsync(cancellationToken);
+    }
+
     public async Task<LunaResult> ProcessAsync(string input, CancellationToken cancellationToken = default)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(LunaIntelligentAgent));
