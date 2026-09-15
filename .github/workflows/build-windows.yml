@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'agent/**'
+      - 'tests/**'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
@@ -23,8 +24,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Restore
+        run: dotnet restore agent/LunaPC.csproj
+
+      - name: Native preflight tests
+        run: dotnet run --project tests/LunaPreflight/LunaPreflight.csproj -c Release --no-restore
+
       - name: Publish LUNA PC
-        run: dotnet publish agent/LunaPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+        run: dotnet publish agent/LunaPC.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --no-restore -o publish
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
@@ -32,4 +39,4 @@ jobs:
           name: LunaPC-win-x64
           path: publish/LunaPC.exe
 
-      # Build trigger after the first Windows compilation fix.
+      # Packaging is reached only after the native preflight passes.
