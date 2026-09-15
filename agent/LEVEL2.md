@@ -1,0 +1,1 @@
+LUNA Level 2 — Memory: persistent local structured memory, separate from Qwen context. Stores explicit profile facts, preferences, projects, computer/app information, decisions, and task experiences.
