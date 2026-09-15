@@ -1,0 +1,1 @@
+The structured memory engine is active in LunaCore through LunaMemory.Remember(). It persists local conversations, explicit user facts, decisions and task experiences. Relevant long-term memories are designed to be injected into local model prompts.
