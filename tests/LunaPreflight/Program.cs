@@ -101,12 +101,13 @@ try
 
         var perception = Activator.CreateInstance(perceptionType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
             ?? throw new InvalidOperationException("Could not create Perception");
-        var actions = Activator.CreateInstance(actionType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+        var confirm = new Func<string, bool>(_ => true);
+        var actions = Activator.CreateInstance(actionType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new object[] { confirm }, null)
             ?? throw new InvalidOperationException("Could not create ActionEngine");
         var memory = Activator.CreateInstance(memoryType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
             ?? throw new InvalidOperationException("Could not create OperationalMemory");
         var autonomy = Activator.CreateInstance(autonomyType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
-            new[] { brain, perception, actions, memory, 2 }, null)
+            new object[] { brain, perception, actions, memory, 2 }, null)
             ?? throw new InvalidOperationException("Could not create AutonomyEngine");
 
         var execute = autonomyType.GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
