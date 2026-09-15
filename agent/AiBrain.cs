@@ -1,22 +1,20 @@
-using System.Text.Json;
-
 namespace LunaPC;
 
 /// <summary>
-/// LUNA's own local cognitive layer. No Ollama, no external model, no API.
-/// The neural core is initialized and trained locally from LUNA's own seed corpus,
-/// while the executive layer converts understood goals into the existing agent contract.
+/// LUNA's local cognitive layer. No Ollama, no external model, no API.
+/// The language core is a Transformer implemented directly in C# and trained locally.
+/// The executive layer remains responsible for validated Windows actions and verification.
 /// </summary>
 internal sealed class AiBrain : IDisposable
 {
-    private readonly NativeBrainCore _neural;
+    private readonly NativeTransformerBrain _neural;
     private readonly object _sync = new();
     private readonly List<(string User, string Assistant)> _history = new();
     private BrainDecision? _last;
     private bool _disposed;
 
     public OperationalMemory Memory { get; }
-    public string Model => "LUNA-NATIVE-0.1";
+    public string Model => "LUNA-NATIVE-TRANSFORMER-0.2";
     public BrainDecision? LastDecision => _last;
     public bool IsReady => !_disposed;
     public int ParameterCount => _neural.ParameterCount;
@@ -26,9 +24,9 @@ internal sealed class AiBrain : IDisposable
         var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LunaPC", "brain");
         Directory.CreateDirectory(data);
         Memory = new OperationalMemory();
-        _neural = new NativeBrainCore(data, 96);
+        _neural = new NativeTransformerBrain(data);
         if (!_neural.IsTrained)
-            _neural.Train(SeedCorpus, epochs: 2, learningRate: 0.0025f);
+            _neural.Train(SeedCorpus, epochs: 1, learningRate: 0.01f);
     }
 
     public Task<string?> AskAsync(string text, CancellationToken ct = default)
@@ -57,16 +55,12 @@ internal sealed class AiBrain : IDisposable
         BuildActions(lower, d);
 
         if (d.Actions.Count == 0)
-        {
             d.Response = GenerateResponse(input, lower);
-        }
         else
-        {
             d.Response = "Entendi o objetivo. Vou executar o próximo passo e verificar o resultado.";
-        }
 
         if (lower is "oi" or "olá" or "ola" or "bom dia" or "boa tarde" or "boa noite")
-            d.Response = "Olá, Marcos. Eu sou a LUNA. Meu cérebro nativo está funcionando localmente no computador.";
+            d.Response = "Olá, Marcos. Eu sou a LUNA. Meu cérebro Transformer nativo está funcionando localmente no computador.";
 
         lock (_sync)
         {
@@ -80,16 +74,27 @@ internal sealed class AiBrain : IDisposable
     private string GenerateResponse(string input, string lower)
     {
         if (lower.Contains("quem é você") || lower.Contains("quem e você") || lower.Contains("o que você é"))
-            return "Eu sou a LUNA, uma IA local construída para este computador. Meu cérebro neural é próprio e os meus pesos ficam na máquina.";
+            return "Eu sou a LUNA, uma IA local construída para este computador. Meu cérebro Transformer é próprio e os pesos ficam na máquina.";
         if (lower.Contains("como você funciona") || lower.Contains("como voce funciona"))
             return "Eu observo o computador, interpreto o objetivo, planejo, ajo, verifico o resultado e registro aprendizados operacionais. O núcleo neural é executado localmente.";
         if (lower.Contains("obrigado") || lower.Contains("obrigada")) return "Por nada. Vamos continuar.";
-        if (lower.Contains("teste") || lower.Contains("testando")) return "Teste recebido. Meu cérebro nativo está respondendo.";
+        if (lower.Contains("teste") || lower.Contains("testando")) return "Teste recebido. Meu cérebro neural nativo está respondendo.";
 
-        var generated = _neural.Generate("LUNA: " + input + "\nLUNA:", 220, 0.55f);
-        if (!string.IsNullOrWhiteSpace(generated) && generated.Length >= 4 && generated.Any(char.IsLetter))
+        var generated = _neural.Generate("LUNA: " + input + "\nLUNA:", 180, 0.55f);
+        if (IsUsableGeneratedText(generated))
             return generated.Replace("LUNA:", "", StringComparison.Ordinal).Trim();
+
         return "Entendi a mensagem. Posso observar o computador, planejar uma tarefa, executar ações permitidas e verificar o resultado.";
+    }
+
+    private static bool IsUsableGeneratedText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length < 8) return false;
+        var letters = text.Count(char.IsLetter);
+        if (letters < text.Length * 0.45) return false;
+        for (var i = 0; i + 4 < text.Length; i++)
+            if (text[i] == text[i + 1] && text[i] == text[i + 2] && text[i] == text[i + 3] && text[i] == text[i + 4]) return false;
+        return true;
     }
 
     private static string DetectIntent(string text)
@@ -192,6 +197,5 @@ Planejamento é transformar um objetivo em ações verificáveis.\n
 Percepção significa descobrir o estado atual do computador.\n
 Ação significa modificar o computador de forma controlada.\n
 Verificação significa comparar o estado observado com o objetivo.\n
-Aprendizado significa registrar o que funcionou e o que falhou.\n
-""";
+Aprendizado significa registrar o que funcionou e o que falhou.\n""";
 }
