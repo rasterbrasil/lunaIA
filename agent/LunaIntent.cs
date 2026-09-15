@@ -14,6 +14,7 @@ internal enum LunaIntentKind
     PressKey,
     OpenFolder,
     AskIdentity,
+    AskCapabilities,
     AskTime,
     AskDate,
     AskMemory,
@@ -37,6 +38,7 @@ internal static class LunaIntentParser
         if (string.IsNullOrWhiteSpace(n)) return new(LunaIntentKind.Unknown, text, Confidence: 0);
 
         if (Has(n, "quem e voce", "o que voce e", "quem e a luna", "o que e a luna")) return new(LunaIntentKind.AskIdentity, text);
+        if (Has(n, "o que sabe fazer", "o que voce sabe fazer", "o que consegue fazer", "o que voce consegue fazer", "quais suas capacidades", "quais sao suas capacidades", "o que voce pode fazer", "o que pode fazer", "como voce pode me ajudar")) return new(LunaIntentKind.AskCapabilities, text);
         if (Has(n, "que horas", "hora agora", "horario agora")) return new(LunaIntentKind.AskTime, text);
         if (Has(n, "que dia", "data de hoje", "hoje e")) return new(LunaIntentKind.AskDate, text);
         if (Has(n, "memoria", "o que voce lembra")) return new(LunaIntentKind.AskMemory, text);
