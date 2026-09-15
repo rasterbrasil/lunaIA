@@ -15,8 +15,6 @@ internal sealed class LunaIntelligentAgent : IDisposable
         _planner = new LunaIntelligentPlanner(_language, _tools);
         _fallback = new LunaCore();
 
-        // Load the local Qwen weights in the background while the UI opens.
-        // The first real user request no longer has to pay the full model-load cost.
         _ = Task.Run(async () =>
         {
             try { await WarmupAsync(); } catch { }
@@ -43,9 +41,13 @@ internal sealed class LunaIntelligentAgent : IDisposable
         LunaIntelligentPlan? plan;
         try
         {
-            plan = await Task.Run(async () => await _planner.CreateAsync(text, context, cancellationToken), cancellationToken);
+            // The planner is an action router, not the chat engine. A hard timeout
+            // guarantees that the UI can recover if native inference ever stalls.
+            plan = await _planner.CreateAsync(text, context, cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
         }
         catch (OperationCanceledException) { return new("Interrompi o planejamento desta tarefa."); }
+        catch (TimeoutException) { plan = null; }
         catch { plan = null; }
 
         if (plan is not null)
@@ -57,6 +59,8 @@ internal sealed class LunaIntelligentAgent : IDisposable
                 return await ExecutePlanAsync(plan, cancellationToken);
         }
 
+        // If the planner cannot finish, fall back to the deterministic command
+        // engine instead of leaving the application in RACIOCINANDO forever.
         return await _fallback.ProcessAsync(text);
     }
 
@@ -169,6 +173,7 @@ internal sealed class LunaIntelligentAgent : IDisposable
     private static bool IsDirectConversation(LunaIntent intent)
         => intent.Kind is LunaIntentKind.Greeting
             or LunaIntentKind.AskIdentity
+            or LunaIntentKind.AskCapabilities
             or LunaIntentKind.AskTime
             or LunaIntentKind.AskDate
             or LunaIntentKind.AskMemory
