@@ -6,8 +6,7 @@ namespace LunaPC;
 
 /// <summary>
 /// Phase 2.3: persistent local knowledge memory built from the internet corpus.
-/// This is retrieval, not an external AI service. It searches the corpus stored on disk,
-/// ranks passages lexically, and returns grounded excerpts for the native Transformer.
+/// Retrieval is deterministic and local: no external AI service is used.
 /// </summary>
 internal sealed class KnowledgeMemory
 {
@@ -17,7 +16,9 @@ internal sealed class KnowledgeMemory
         "em","no","na","nos","nas","por","para","com","sem","que","se","é","e","eu","você",
         "voce","me","te","ele","ela","eles","elas","isso","isto","aquele","aquela","como","mais",
         "menos","sobre","entre","também","tambem","ser","são","sao","foi","era","sua","seu","suas","seus",
-        "ao","aos","à","às","ate","até","já","ja","muito","muita","muitos","muitas","pode","podem"
+        "ao","aos","à","às","ate","até","já","ja","muito","muita","muitos","muitas","pode","podem",
+        "sabe","sabem","conhece","conhecem","fale","falar","explique","explicar","defina","definir","diga","dizer",
+        "pesquise","pesquisa","procure","procurar","busque","buscar","quero","quero","sobre","assunto"
     };
 
     private readonly string _corpusPath;
@@ -40,18 +41,29 @@ internal sealed class KnowledgeMemory
         var results = new List<KnowledgeMatch>();
         foreach (var document in LoadDocuments())
         {
+            var normalizedTitle = Normalize(document.Title);
+            var titleHits = terms.Count(term => TitleMatches(normalizedTitle, term));
+
             foreach (var passage in SplitPassages(document.Text))
             {
                 var normalized = Normalize(passage);
-                var score = Score(terms, normalized, document.Title);
+                var score = Score(terms, normalized, normalizedTitle, titleHits);
                 if (score <= 0) continue;
+
+                // For a one-topic question such as "sobre o Brasil", require the
+                // topic to be present in the title or repeatedly in the passage.
+                // This prevents a random mention of "Brasil" from winning.
+                var coverage = terms.Count(t => ContainsTopic(normalized, t));
+                if (terms.Count == 1 && titleHits == 0 && coverage == 0) continue;
+                if (terms.Count >= 2 && titleHits == 0 && coverage < 2) continue;
+
                 results.Add(new KnowledgeMatch(document.Title, passage.Trim(), score));
             }
         }
 
         return results
             .OrderByDescending(x => x.Score)
-            .ThenByDescending(x => x.Text.Length)
+            .ThenBy(x => x.Title, StringComparer.OrdinalIgnoreCase)
             .Take(Math.Max(1, maxResults))
             .ToList();
     }
@@ -111,21 +123,32 @@ internal sealed class KnowledgeMemory
         }
     }
 
-    private static int Score(List<string> terms, string normalizedText, string title)
+    private static int Score(List<string> terms, string normalizedText, string normalizedTitle, int titleHits)
     {
-        var titleText = Normalize(title);
-        var score = 0;
+        var score = titleHits * 30;
         foreach (var term in terms)
         {
             var textHits = CountWhole(normalizedText, term);
-            if (textHits > 0) score += Math.Min(6, textHits * 3);
-            if (titleText.Contains(term, StringComparison.Ordinal)) score += 8;
+            if (textHits > 0) score += Math.Min(12, textHits * 4);
+            if (TitleMatches(normalizedTitle, term)) score += 25;
         }
 
-        var coverage = terms.Count(t => normalizedText.Contains(t, StringComparison.Ordinal));
-        if (coverage >= 2) score += coverage * 4;
+        var coverage = terms.Count(t => ContainsTopic(normalizedText, t));
+        if (coverage >= 2) score += coverage * 10;
         return score;
     }
+
+    private static bool TitleMatches(string title, string term)
+    {
+        if (title.Contains(term, StringComparison.Ordinal)) return true;
+        // Small Portuguese morphological tolerance: brasil -> brasileira/brasileiro.
+        if (term.Length >= 5 && title.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Any(word => word.StartsWith(term, StringComparison.Ordinal) && word.Length <= term.Length + 5)) return true;
+        return false;
+    }
+
+    private static bool ContainsTopic(string text, string term)
+        => text.Contains(term, StringComparison.Ordinal);
 
     private static int CountWhole(string text, string term)
     {
@@ -140,7 +163,7 @@ internal sealed class KnowledgeMemory
     }
 
     private static List<string> Tokenize(string text)
-        => Regex.Matches(Normalize(text), "[a-z0-9áéíóúâêôãõç]+", RegexOptions.IgnoreCase)
+        => Regex.Matches(Normalize(text), "[a-z0-9]+")
             .Select(m => m.Value)
             .Where(x => x.Length >= 3 && !StopWords.Contains(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
