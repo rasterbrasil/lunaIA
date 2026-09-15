@@ -68,15 +68,18 @@ internal sealed class NativeTransformerBrain
                 _output[i, j] = NextWeight(0.02f);
     }
 
-    public void Train(string corpus, int epochs = 3, float learningRate = 0.01f, CancellationToken ct = default)
+    public void Train(string corpus, int epochs = 1, float learningRate = 0.01f, CancellationToken ct = default)
     {
         var ids = Encode(corpus);
         if (ids.Length < 16) return;
 
         lock (_sync)
         {
-            var context = Math.Min(96, MaxSequence);
-            var step = Math.Max(1, context / 4);
+            // Bounded bootstrap: enough local learning to initialize the native head without
+            // freezing the Windows UI for a long first launch. Full-weight training comes next.
+            var context = 32;
+            var step = 32;
+            var examples = 0;
             for (var epoch = 0; epoch < Math.Max(1, epochs); epoch++)
             {
                 for (var end = context; end < ids.Length; end += step)
@@ -95,7 +98,9 @@ internal sealed class NativeTransformerBrain
                             _output[h, v] -= learningRate * grad * hidden[h];
                         _bias[v] -= learningRate * grad;
                     }
+                    if (++examples >= 12) break;
                 }
+                if (examples >= 12) break;
             }
             _trained = true;
             Save();
@@ -140,6 +145,13 @@ internal sealed class NativeTransformerBrain
             var norm = new float[length, ModelWidth];
             for (var t = 0; t < length; t++) LayerNorm(x, t, layer.Norm1, norm, t);
 
+            var q = new float[length, ModelWidth];
+            var k = new float[length, ModelWidth];
+            var value = new float[length, ModelWidth];
+            Multiply(norm, layer.Q, q);
+            Multiply(norm, layer.K, k);
+            Multiply(norm, layer.V, value);
+
             var attended = new float[length, ModelWidth];
             var headWidth = ModelWidth / Heads;
             for (var t = 0; t < length; t++)
@@ -148,19 +160,11 @@ internal sealed class NativeTransformerBrain
                 {
                     var scores = new float[t + 1];
                     var max = float.MinValue;
+                    var baseIndex = head * headWidth;
                     for (var s = 0; s <= t; s++)
                     {
                         var dot = 0f;
-                        for (var k = 0; k < headWidth; k++)
-                        {
-                            var q = 0f; var key = 0f;
-                            for (var d = 0; d < ModelWidth; d++)
-                            {
-                                q += norm[t, d] * layer.Q[d, head * headWidth + k];
-                                key += norm[s, d] * layer.K[d, head * headWidth + k];
-                            }
-                            dot += q * key;
-                        }
+                        for (var d = 0; d < headWidth; d++) dot += q[t, baseIndex + d] * k[s, baseIndex + d];
                         scores[s] = dot / MathF.Sqrt(headWidth);
                         max = MathF.Max(max, scores[s]);
                     }
@@ -169,48 +173,49 @@ internal sealed class NativeTransformerBrain
                     for (var s = 0; s <= t; s++)
                     {
                         var weight = scores[s] / Math.Max(sum, 1e-8f);
-                        for (var k = 0; k < headWidth; k++)
-                        {
-                            var value = 0f;
-                            for (var d = 0; d < ModelWidth; d++) value += norm[s, d] * layer.V[d, head * headWidth + k];
-                            attended[t, head * headWidth + k] += weight * value;
-                        }
+                        for (var d = 0; d < headWidth; d++) attended[t, baseIndex + d] += weight * value[s, baseIndex + d];
                     }
                 }
             }
 
-            var residual = new float[length, ModelWidth];
+            var projected = new float[length, ModelWidth];
+            Multiply(attended, layer.O, projected);
             for (var t = 0; t < length; t++)
-                for (var h = 0; h < ModelWidth; h++)
-                {
-                    var projected = 0f;
-                    for (var k = 0; k < ModelWidth; k++) projected += attended[t, k] * layer.O[k, h];
-                    residual[t, h] = x[t, h] + projected;
-                }
+                for (var h = 0; h < ModelWidth; h++) x[t, h] += projected[t, h];
 
             var norm2 = new float[length, ModelWidth];
-            for (var t = 0; t < length; t++) LayerNorm(residual, t, layer.Norm2, norm2, t);
+            for (var t = 0; t < length; t++) LayerNorm(x, t, layer.Norm2, norm2, t);
             var ff = new float[length, FeedForward];
+            Multiply(norm2, layer.F1, ff);
             for (var t = 0; t < length; t++)
                 for (var j = 0; j < FeedForward; j++)
                 {
-                    var a = 0f;
-                    for (var k = 0; k < ModelWidth; k++) a += norm2[t, k] * layer.F1[k, j];
+                    var a = ff[t, j];
                     ff[t, j] = 0.5f * a * (1f + MathF.Tanh(0.79788456f * (a + 0.044715f * a * a * a)));
                 }
-
+            var ffOut = new float[length, ModelWidth];
+            Multiply(ff, layer.F2, ffOut);
             for (var t = 0; t < length; t++)
-                for (var h = 0; h < ModelWidth; h++)
-                {
-                    var b = 0f;
-                    for (var k = 0; k < FeedForward; k++) b += ff[t, k] * layer.F2[k, h];
-                    x[t, h] = residual[t, h] + b;
-                }
+                for (var h = 0; h < ModelWidth; h++) x[t, h] += ffOut[t, h];
         }
 
         var result = new float[ModelWidth];
         for (var h = 0; h < ModelWidth; h++) result[h] = x[length - 1, h];
         return result;
+    }
+
+    private static void Multiply(float[,] input, float[,] weights, float[,] output)
+    {
+        var rows = input.GetLength(0);
+        var inner = input.GetLength(1);
+        var columns = weights.GetLength(1);
+        for (var r = 0; r < rows; r++)
+            for (var c = 0; c < columns; c++)
+            {
+                var sum = 0f;
+                for (var i = 0; i < inner; i++) sum += input[r, i] * weights[i, c];
+                output[r, c] = sum;
+            }
     }
 
     private static void LayerNorm(float[,] source, int row, float[] gamma, float[,] target, int targetRow)
@@ -254,11 +259,7 @@ internal sealed class NativeTransformerBrain
     private static string Decode(IEnumerable<int> ids)
     {
         var sb = new StringBuilder();
-        foreach (var id in ids)
-        {
-            var safe = Math.Clamp(id, 0, Vocab - 1);
-            sb.Append(Vocabulary[safe]);
-        }
+        foreach (var id in ids) sb.Append(Vocabulary[Math.Clamp(id, 0, Vocab - 1)]);
         return sb.ToString().Trim();
     }
 
