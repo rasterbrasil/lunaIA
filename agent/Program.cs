@@ -75,7 +75,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         _ = Task.Run(ListenAndProcess);
     }
 
-    private void ListenAndProcess()
+    private async Task ListenAndProcess()
     {
         try
         {
@@ -93,7 +93,8 @@ internal sealed class LunaAgentContext : ApplicationContext
             var result = recognizer.Recognize(TimeSpan.FromSeconds(12));
             var text = result?.Text?.Trim();
             if (string.IsNullOrWhiteSpace(text)) { Speak("Não consegui entender. Tente novamente."); return; }
-            _ = HandleCommandAsync(text);
+            var answer = await HandleCommandAsync(text);
+            Speak(answer);
         }
         catch (InvalidOperationException) { Speak("Não consegui acessar o microfone. Verifique se ele está disponível no Windows."); }
         catch { Speak("Tive um problema ao ouvir você. Vamos tentar novamente."); }
@@ -159,6 +160,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         _hotkeyWindow.DestroyHandle();
         _tray.Visible = false;
         _tray.Dispose();
+        _brain.Dispose();
         _speech.Dispose();
         base.ExitThreadCore();
     }
@@ -188,7 +190,7 @@ internal sealed class TextCommandForm : Form
         MaximizeBox = false; MinimizeBox = false;
 
         var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone.", Left = 20, Top = 55, Width = 560 };
+        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone. Você pode fazer várias perguntas seguidas.", Left = 20, Top = 55, Width = 560 };
         _conversation = new TextBox { Left = 20, Top = 82, Width = 560, Height = 230, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
         _input = new TextBox { Left = 20, Top = 325, Width = 455 };
         _input.PlaceholderText = "Ex.: Luna, como você está?";
@@ -221,9 +223,9 @@ internal sealed class TextCommandForm : Form
             _conversation.SelectionStart = _conversation.TextLength;
             _conversation.ScrollToCaret();
         }
-        catch
+        catch (Exception ex)
         {
-            _conversation.AppendText("LUNA: Não consegui processar sua mensagem agora." + Environment.NewLine + Environment.NewLine);
+            _conversation.AppendText($"LUNA: Não consegui processar sua mensagem agora. {ex.Message}{Environment.NewLine}{Environment.NewLine}");
         }
         finally
         {
