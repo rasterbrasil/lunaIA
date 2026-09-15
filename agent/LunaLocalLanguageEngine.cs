@@ -47,7 +47,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
             };
 
             using var context = await Task.Run(() => _weights!.CreateContext(parameters), cancellationToken);
-            using var executor = new InteractiveExecutor(context);
+            var executor = new InteractiveExecutor(context);
 
             var history = new ChatHistory();
             history.AddMessage(AuthorRole.System, systemPrompt);
