@@ -32,17 +32,20 @@ internal sealed class LunaAgentContext : ApplicationContext
     private readonly HotkeyWindow _hotkeyWindow;
     private readonly PiperTts _speech;
     private readonly AiBrain _brain;
+    private readonly Perception _perception;
     private int _listening;
 
     public LunaAgentContext()
     {
         _speech = new PiperTts();
         _brain = new AiBrain();
+        _perception = new Perception();
 
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Falar com a LUNA (microfone)", null, (_, _) => StartListening());
         menu.Items.Add("Conversar por texto (sem microfone)", null, (_, _) => ShowTextTest());
+        menu.Items.Add("👁 Ver estado do computador", null, (_, _) => ShowPerception());
         menu.Items.Add("Testar voz neural", null, (_, _) => Speak("Olá, Marcos. Eu sou a LUNA. Minha voz agora é neural, feminina e gerada localmente no seu computador."));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Sair", null, (_, _) => ExitThread());
@@ -54,8 +57,8 @@ internal sealed class LunaAgentContext : ApplicationContext
             Speak("LUNA PC iniciada. Não consegui registrar o atalho global Ctrl Alt L.");
         else
             Speak(_speech.IsReady
-                ? "LUNA PC iniciada. Meu cérebro e minha voz locais estão prontos. Para conversar sem microfone, use o modo Conversar por texto."
-                : "LUNA PC iniciada. Meu cérebro local está pronto. A voz neural ainda precisa ser preparada. Você pode conversar por texto sem microfone.");
+                ? "LUNA PC iniciada. Meu cérebro, minha percepção e minha voz locais estão prontos."
+                : "LUNA PC iniciada. Meu cérebro e minha percepção locais estão prontos. A voz neural ainda precisa ser preparada.");
         EnableStartup();
     }
 
@@ -65,6 +68,20 @@ internal sealed class LunaAgentContext : ApplicationContext
     {
         using var form = new TextCommandForm(HandleCommandAsync);
         form.ShowDialog();
+    }
+
+    private void ShowPerception()
+    {
+        try
+        {
+            var snapshot = _perception.Capture();
+            using var form = new PerceptionForm(snapshot);
+            form.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Não consegui analisar o estado do computador.\n\n{ex.Message}", "LUNA PC — Percepção", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void StartListening()
@@ -79,11 +96,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         try
         {
             using var recognizer = CreateRecognizer();
-            if (recognizer is null)
-            {
-                Speak("O reconhecimento de voz do Windows não está instalado. Como você está sem microfone, use Conversar por texto. Mais adiante vamos substituir esse reconhecimento por um reconhecimento neural local.");
-                return;
-            }
+            if (recognizer is null) { Speak("O reconhecimento de voz do Windows não está instalado. Use Conversar por texto."); return; }
             recognizer.LoadGrammar(new DictationGrammar());
             recognizer.InitialSilenceTimeout = TimeSpan.FromSeconds(5);
             recognizer.BabbleTimeout = TimeSpan.FromSeconds(3);
@@ -111,23 +124,47 @@ internal sealed class LunaAgentContext : ApplicationContext
         catch { return null; }
     }
 
-    // Fase 1: nenhuma frase é transformada em uma ação por palavra-chave.
-    // Toda mensagem passa pelo cérebro, que interpreta intenção, contexto e plano.
     private async Task<string> HandleCommandAsync(string text)
     {
-        var decision = await _brain.ThinkAsync(text);
-        if (decision is null || string.IsNullOrWhiteSpace(decision.Response))
-            return "Meu cérebro local não retornou uma resposta. Verifique se o motor local de IA está ligado.";
-        return decision.Response.Trim();
+        var trimmed = text.Trim();
+        var lower = trimmed.ToLowerInvariant();
+
+        // Percepção explícita: estas solicitações usam a camada de observação antes do cérebro.
+        if (lower.Contains("analise meu computador") || lower.Contains("analisa meu computador") || lower.Contains("estado do computador") || lower.Contains("veja meu computador") || lower.Contains("ver computador"))
+        {
+            var snapshot = _perception.CaptureForBrain();
+            var decision = await _brain.ThinkAsync("Analise o estado observado do computador abaixo e me explique o que está acontecendo, sem afirmar que executou ações.\n\n" + snapshot);
+            return decision?.Response ?? "Não consegui interpretar o estado do computador.";
+        }
+
+        if (lower.StartsWith("leia o arquivo ") || lower.StartsWith("ler o arquivo "))
+        {
+            var marker = lower.StartsWith("leia o arquivo ") ? "leia o arquivo " : "ler o arquivo ";
+            var path = trimmed[marker.Length..].Trim().Trim('"');
+            try
+            {
+                var content = _perception.ReadTextFile(path);
+                var decision = await _brain.ThinkAsync("Leia e analise este arquivo. Explique os pontos importantes sem inventar informações.\n\nARQUIVO: " + path + "\n\nCONTEÚDO:\n" + content);
+                return decision?.Response ?? content;
+            }
+            catch (Exception ex) { return "Não consegui ler o arquivo: " + ex.Message; }
+        }
+
+        // Quando o pedido claramente depende do estado atual do PC, o cérebro recebe uma observação atualizada.
+        var needsPerception = lower.Contains("tela") || lower.Contains("janela") || lower.Contains("erro") || lower.Contains("computador") || lower.Contains("pc") || lower.Contains("arquivo");
+        if (needsPerception)
+        {
+            try { trimmed += "\n\nESTADO OBSERVADO DO COMPUTADOR:\n" + _perception.CaptureForBrain(); }
+            catch { trimmed += "\n\n[Percepção do computador indisponível neste momento.]"; }
+        }
+
+        var finalDecision = await _brain.ThinkAsync(trimmed);
+        return finalDecision?.Response ?? "Meu cérebro local não retornou uma resposta.";
     }
 
-    private void Speak(string text)
-    {
-        if (_speech.IsReady)
-            _speech.Speak(text);
-    }
+    private void Speak(string text) { if (_speech.IsReady) _speech.Speak(text); }
 
-    private static void EnableStartup()
+    private void EnableStartup()
     {
         try { using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true); key?.SetValue("LunaPC", $"\"{Application.ExecutablePath}\""); } catch { }
     }
@@ -139,6 +176,7 @@ internal sealed class LunaAgentContext : ApplicationContext
         _tray.Visible = false;
         _tray.Dispose();
         _brain.Dispose();
+        _perception.Dispose();
         _speech.Dispose();
         base.ExitThreadCore();
     }
@@ -148,6 +186,28 @@ internal sealed class LunaAgentContext : ApplicationContext
         private readonly Action _callback;
         public HotkeyWindow(Action callback) { _callback = callback; CreateHandle(new CreateParams()); }
         protected override void WndProc(ref Message m) { if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId) _callback(); base.WndProc(ref m); }
+    }
+}
+
+internal sealed class PerceptionForm : Form
+{
+    public PerceptionForm(ComputerSnapshot snapshot)
+    {
+        Text = "LUNA PC — Percepção";
+        StartPosition = FormStartPosition.CenterScreen;
+        Width = 900; Height = 650;
+        var box = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 10) };
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("👁 PERCEPÇÃO DA LUNA");
+        sb.AppendLine($"Computador: {snapshot.MachineName}");
+        sb.AppendLine($"Sistema: {snapshot.OperatingSystem}");
+        sb.AppendLine($"CPU: {snapshot.ProcessorCount} núcleos | RAM disponível: {snapshot.TotalAvailableMemoryBytes / 1024 / 1024:N0} MB");
+        sb.AppendLine(); sb.AppendLine("JANELAS VISÍVEIS:");
+        foreach (var w in snapshot.Windows) sb.AppendLine($"• {w.Title} | {w.Process} (PID {w.ProcessId}) [{w.X},{w.Y} {w.Width}x{w.Height}]");
+        sb.AppendLine(); sb.AppendLine("PROCESSOS (maior uso de memória):");
+        foreach (var p in snapshot.Processes) sb.AppendLine($"• {p.Name} (PID {p.ProcessId}) | {p.MemoryBytes / 1024 / 1024:N0} MB | {p.MainWindowTitle}");
+        box.Text = sb.ToString();
+        Controls.Add(box);
     }
 }
 
@@ -166,12 +226,11 @@ internal sealed class TextCommandForm : Form
         Width = 620; Height = 430;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
-
-        var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite sua mensagem. A LUNA interpreta linguagem natural, usa o contexto e cria um plano antes de responder.", Left = 20, Top = 55, Width = 560 };
+        var title = new Label { Text = "🧠👁 LUNA PC — Cérebro + Percepção", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+        var info = new Label { Text = "Digite sua mensagem. A LUNA interpreta linguagem natural e pode observar o estado do computador quando necessário.", Left = 20, Top = 55, Width = 560 };
         _conversation = new TextBox { Left = 20, Top = 82, Width = 560, Height = 230, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
         _input = new TextBox { Left = 20, Top = 325, Width = 455 };
-        _input.PlaceholderText = "Ex.: Luna, preciso organizar meus arquivos por tipo e depois fazer um backup.";
+        _input.PlaceholderText = "Ex.: Luna, analise meu computador.";
         _send = new Button { Text = "Enviar para a LUNA", Left = 485, Top = 323, Width = 95, Height = 34 };
         _send.Click += async (_, _) => await SubmitAsync();
         _input.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await SubmitAsync(); } };
@@ -184,32 +243,19 @@ internal sealed class TextCommandForm : Form
     {
         var text = _input.Text.Trim();
         if (string.IsNullOrWhiteSpace(text) || !_send.Enabled) return;
-
         _conversation.AppendText($"Você: {text}{Environment.NewLine}");
-        _input.Clear();
-        _send.Enabled = false;
-        _input.Enabled = false;
+        _input.Clear(); _send.Enabled = false; _input.Enabled = false;
         _conversation.AppendText("LUNA: pensando..." + Environment.NewLine);
         try
         {
             var answer = await _command(text);
             var marker = "LUNA: pensando..." + Environment.NewLine;
             var current = _conversation.Text;
-            if (current.EndsWith(marker, StringComparison.Ordinal))
-                _conversation.Text = current[..^marker.Length];
+            if (current.EndsWith(marker, StringComparison.Ordinal)) _conversation.Text = current[..^marker.Length];
             _conversation.AppendText($"LUNA: {answer}{Environment.NewLine}{Environment.NewLine}");
-            _conversation.SelectionStart = _conversation.TextLength;
-            _conversation.ScrollToCaret();
+            _conversation.SelectionStart = _conversation.TextLength; _conversation.ScrollToCaret();
         }
-        catch (Exception ex)
-        {
-            _conversation.AppendText($"LUNA: Não consegui processar sua mensagem agora. {ex.Message}{Environment.NewLine}{Environment.NewLine}");
-        }
-        finally
-        {
-            _send.Enabled = true;
-            _input.Enabled = true;
-            _input.Focus();
-        }
+        catch (Exception ex) { _conversation.AppendText($"LUNA: Não consegui processar sua mensagem agora. {ex.Message}{Environment.NewLine}{Environment.NewLine}"); }
+        finally { _send.Enabled = true; _input.Enabled = true; _input.Focus(); }
     }
 }
