@@ -4,11 +4,6 @@ using System.Text.Json;
 
 namespace LunaPC;
 
-/// <summary>
-/// Phase 2.2: obtains training material from a public, openly licensed source.
-/// This is data collection only: no external AI model, inference engine or AI API is used.
-/// The first source is Portuguese Wikipedia (CC BY-SA), accessed through its public API.
-/// </summary>
 internal sealed class InternetTrainingService : IDisposable
 {
     private const string Endpoint = "https://pt.wikipedia.org/w/api.php";
@@ -39,7 +34,6 @@ internal sealed class InternetTrainingService : IDisposable
     {
         StartProgressWindow();
         Report("Conectando à fonte pública...", 2, 0, 0, 0, Batches + TrainingChunks + 2, "Iniciando coleta de dados da internet.");
-
         try
         {
             var documents = await CollectAsync(ct);
@@ -48,10 +42,8 @@ internal sealed class InternetTrainingService : IDisposable
                 Report("Nenhum documento foi obtido", 100, 0, 0, Batches + 1, Batches + TrainingChunks + 2, "Verifique a conexão com a internet e tente novamente.");
                 return new InternetTrainingResult(0, 0, "Nenhum documento novo foi obtido.");
             }
-
             Report("Salvando corpus local...", 55, documents.Count, 0, Batches + 1, Batches + TrainingChunks + 2, $"{documents.Count} documentos válidos coletados.");
             await SaveCorpusAsync(documents, ct);
-
             var trained = 0;
             var chunks = BuildTrainingChunks(documents).Take(TrainingChunks).ToList();
             foreach (var chunk in chunks)
@@ -63,7 +55,6 @@ internal sealed class InternetTrainingService : IDisposable
                 brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct: ct);
                 await Task.Yield();
             }
-
             Report("Treinamento concluído", 100, documents.Count, trained, Batches + chunks.Count + 2, Batches + chunks.Count + 2, $"Checkpoint salvo localmente. {documents.Count} documentos / {trained} blocos.");
             await Task.Delay(900);
             return new InternetTrainingResult(documents.Count, trained, _corpusPath);
@@ -87,8 +78,8 @@ internal sealed class InternetTrainingService : IDisposable
                 _progressForm = form;
                 Application.Run(form);
                 _progressForm = null;
-            })
-            { IsBackground = true, IsThreadPoolThread = false };
+            });
+            _progressThread.IsBackground = true;
             _progressThread.SetApartmentState(ApartmentState.STA);
             _progressThread.Start();
         }
@@ -108,39 +99,28 @@ internal sealed class InternetTrainingService : IDisposable
     {
         var result = new List<InternetDocument>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         for (var batch = 0; batch < Batches; batch++)
         {
             ct.ThrowIfCancellationRequested();
             Report($"Coletando dados da internet... lote {batch + 1}/{Batches}", 5 + batch * 16, result.Count, 0, batch + 1, Batches + TrainingChunks + 2, $"Consultando Wikipédia em português (lote {batch + 1}).");
-            var url = Endpoint +
-                "?action=query&generator=random&grnnamespace=0&grnlimit=" + PagesPerBatch +
-                "&prop=extracts&explaintext=1&exintro=0&format=json&formatversion=2";
-
+            var url = Endpoint + "?action=query&generator=random&grnnamespace=0&grnlimit=" + PagesPerBatch + "&prop=extracts&explaintext=1&exintro=0&format=json&formatversion=2";
             using var response = await _http.GetAsync(url, ct);
             if (!response.IsSuccessStatusCode) continue;
             var json = await response.Content.ReadAsStringAsync(ct);
-
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("query", out var query) ||
-                !query.TryGetProperty("pages", out var pages)) continue;
-
+            if (!doc.RootElement.TryGetProperty("query", out var query) || !query.TryGetProperty("pages", out var pages)) continue;
             foreach (var page in pages.EnumerateArray())
             {
                 var title = page.TryGetProperty("title", out var t) ? t.GetString() : null;
                 var extract = page.TryGetProperty("extract", out var e) ? e.GetString() : null;
                 if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(extract)) continue;
-
                 var cleaned = Clean(extract);
-                if (cleaned.Length < 120) continue;
-                if (!seen.Add(title)) continue;
+                if (cleaned.Length < 120 || !seen.Add(title)) continue;
                 if (cleaned.Length > MaxDocumentCharacters) cleaned = cleaned[..MaxDocumentCharacters];
-
                 result.Add(new InternetDocument(title, cleaned));
             }
             Report($"Lote {batch + 1}/{Batches} recebido", 18 + (batch + 1) * 12, result.Count, 0, batch + 1, Batches + TrainingChunks + 2, $"Documentos válidos até agora: {result.Count}.");
         }
-
         return result;
     }
 
@@ -165,7 +145,6 @@ internal sealed class InternetTrainingService : IDisposable
             corpus.AppendLine(d.Text);
             corpus.AppendLine();
         }
-
         var text = corpus.ToString();
         for (var start = 0; start < text.Length; start += ChunkCharacters)
         {
