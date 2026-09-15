@@ -1,0 +1,1 @@
+Structured memory engine is present and persists locally.
