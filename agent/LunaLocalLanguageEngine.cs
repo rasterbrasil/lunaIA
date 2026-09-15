@@ -28,6 +28,20 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         _modelPath = Path.Combine(_modelDirectory, ModelFileName);
     }
 
+    public async Task WarmupAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(LunaLocalLanguageEngine));
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnsureLoadedAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public Task<string> ChatAsync(string userText, string systemPrompt, CancellationToken cancellationToken = default)
         => ChatAsync(userText, systemPrompt, maxTokens: 384, contextSize: 4096, disableThinking: true, cancellationToken);
 
@@ -45,8 +59,6 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         {
             await EnsureLoadedAsync(cancellationToken);
 
-            // Model weights stay loaded once. Each request gets a fresh context/KV
-            // cache, which prevents state leaking between independent requests.
             var parameters = new ModelParams(_modelPath)
             {
                 ContextSize = contextSize,
@@ -61,9 +73,6 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
             var session = new ChatSession(executor, history);
             session.WithHistoryTransform(new PromptTemplateTransformer(_weights!, withAssistant: true));
 
-            // Qwen3 enables reasoning by default. For the fast local assistant and
-            // especially for planning JSON, disable thinking so the first real user
-            // request does not spend most of its budget in hidden <think> tokens.
             var effectiveUserText = disableThinking
                 ? $"{userText.Trim()} /no_think"
                 : userText;
