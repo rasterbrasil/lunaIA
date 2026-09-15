@@ -14,6 +14,13 @@ internal sealed class LunaIntelligentAgent : IDisposable
         _decision = new LunaDecisionEngine(_tools);
         _planner = new LunaIntelligentPlanner(_language, _tools);
         _fallback = new LunaCore();
+
+        // Load the local Qwen weights in the background while the UI opens.
+        // The first real user request no longer has to pay the full model-load cost.
+        _ = Task.Run(async () =>
+        {
+            try { await WarmupAsync(); } catch { }
+        });
     }
 
     public async Task WarmupAsync(CancellationToken cancellationToken = default)
