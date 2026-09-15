@@ -24,8 +24,11 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore
+      - name: Restore LUNA PC
         run: dotnet restore agent/LunaPC.csproj
+
+      - name: Restore native preflight tests
+        run: dotnet restore tests/LunaPreflight/LunaPreflight.csproj
 
       - name: Native preflight tests
         run: dotnet run --project tests/LunaPreflight/LunaPreflight.csproj -c Release --no-restore
