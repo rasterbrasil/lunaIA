@@ -48,8 +48,7 @@ foreach (var input in negativeTraining)
     if (result) failures.Add($"Knowledge question incorrectly routed to training: {input}");
 }
 
-// Teste de integração real: executa o mesmo AiBrain.ThinkAsync usado pela interface.
-// Assim verificamos a resposta final, e não apenas o método de classificação.
+// Teste de integração do AiBrain isolado: executa o mesmo ThinkAsync usado pelo agente.
 try
 {
     var brain = Activator.CreateInstance(brainType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
@@ -68,6 +67,8 @@ try
         var response = decision?.GetType().GetProperty("Response")?.GetValue(decision)?.ToString() ?? string.Empty;
         if (!response.Contains("Eu sou a LUNA", StringComparison.Ordinal))
             failures.Add($"Real ThinkAsync identity response failed: {response}");
+        if (response.Contains("último treinamento", StringComparison.OrdinalIgnoreCase) || response.Contains("documentos públicos no corpus", StringComparison.OrdinalIgnoreCase))
+            failures.Add($"Real ThinkAsync identity response was contaminated by training status: {response}");
         if (stopwatch.ElapsedMilliseconds > 2000)
             failures.Add($"Real ThinkAsync identity response was too slow: {stopwatch.ElapsedMilliseconds} ms");
 
@@ -81,6 +82,66 @@ try
 catch (Exception ex)
 {
     failures.Add($"Real ThinkAsync test crashed: {ex.GetBaseException().Message}");
+}
+
+// Teste de regressão do caminho COMPLETO usado pela interface:
+// interface -> AutonomyEngine.ExecuteAsync -> AiBrain.ThinkAsync -> BrainDecision.Response.
+// Este teste existe especificamente para impedir que o prompt executivo/memória contamine
+// uma pergunta conversacional como "Quem é você?".
+try
+{
+    var brain = Activator.CreateInstance(brainType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+        ?? throw new InvalidOperationException("Could not create AiBrain for autonomy test");
+    try
+    {
+        var perceptionType = assembly.GetType("LunaPC.Perception") ?? throw new InvalidOperationException("Perception not found");
+        var actionType = assembly.GetType("LunaPC.ActionEngine") ?? throw new InvalidOperationException("ActionEngine not found");
+        var memoryType = assembly.GetType("LunaPC.OperationalMemory") ?? throw new InvalidOperationException("OperationalMemory not found");
+        var autonomyType = assembly.GetType("LunaPC.AutonomyEngine") ?? throw new InvalidOperationException("AutonomyEngine not found");
+
+        var perception = Activator.CreateInstance(perceptionType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+            ?? throw new InvalidOperationException("Could not create Perception");
+        var actions = Activator.CreateInstance(actionType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+            ?? throw new InvalidOperationException("Could not create ActionEngine");
+        var memory = Activator.CreateInstance(memoryType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+            ?? throw new InvalidOperationException("Could not create OperationalMemory");
+        var autonomy = Activator.CreateInstance(autonomyType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
+            new[] { brain, perception, actions, memory, 2 }, null)
+            ?? throw new InvalidOperationException("Could not create AutonomyEngine");
+
+        var execute = autonomyType.GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("AutonomyEngine.ExecuteAsync");
+
+        foreach (var input in new[] { "Quem é você?", "Como você funciona?" })
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var task = execute.Invoke(autonomy, new object[] { input, CancellationToken.None }) as Task
+                ?? throw new InvalidOperationException("ExecuteAsync did not return a Task");
+            task.GetAwaiter().GetResult();
+            stopwatch.Stop();
+
+            var result = task.GetType().GetProperty("Result")?.GetValue(task)
+                ?? throw new InvalidOperationException("AutonomyResult was null");
+            var response = result.GetType().GetProperty("Response")?.GetValue(result)?.ToString() ?? string.Empty;
+
+            if (input.StartsWith("Quem", StringComparison.Ordinal) && !response.Contains("Eu sou a LUNA", StringComparison.Ordinal))
+                failures.Add($"END-TO-END identity failed: {response}");
+            if (response.Contains("último treinamento", StringComparison.OrdinalIgnoreCase) || response.Contains("documentos públicos no corpus", StringComparison.OrdinalIgnoreCase))
+                failures.Add($"END-TO-END response contaminated by training status for '{input}': {response}");
+            if (stopwatch.ElapsedMilliseconds > 2000)
+                failures.Add($"END-TO-END conversation too slow for '{input}': {stopwatch.ElapsedMilliseconds} ms");
+
+            Console.WriteLine($"END-TO-END TEST [{input}]: PASS ({stopwatch.ElapsedMilliseconds} ms)");
+        }
+    }
+    finally
+    {
+        (brain as IDisposable)?.Dispose();
+    }
+}
+catch (Exception ex)
+{
+    failures.Add($"END-TO-END AutonomyEngine test crashed: {ex.GetBaseException().Message}");
 }
 
 var temp = Path.Combine(Path.GetTempPath(), "LunaPreflight-" + Guid.NewGuid().ToString("N"));
@@ -141,4 +202,4 @@ if (failures.Count > 0)
 }
 
 Console.WriteLine("LUNA PREFLIGHT: PASS");
-Console.WriteLine("Real AiBrain conversation path, routing, local knowledge indexing/ranking, and interrupted-training recovery passed.");
+Console.WriteLine("End-to-end AutonomyEngine conversation path, routing, local knowledge indexing/ranking, and interrupted-training recovery passed.");
