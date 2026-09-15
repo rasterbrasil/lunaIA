@@ -11,5 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.Speech" Version="8.0.0" />
+    <PackageReference Include="UIAutomationClient" Version="8.0.0" />
+    <PackageReference Include="UIAutomationTypes" Version="8.0.0" />
   </ItemGroup>
 </Project>
