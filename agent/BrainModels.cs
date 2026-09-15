@@ -10,6 +10,7 @@ internal sealed class BrainDecision
     public List<string> RelevantContext { get; set; } = new();
     public bool NeedsClarification { get; set; }
     public string ClarificationQuestion { get; set; } = "";
+    public bool Completed { get; set; }
     public List<BrainAction> Actions { get; set; } = new();
     public string Response { get; set; } = "";
 }
