@@ -4,8 +4,8 @@ using System.Runtime.InteropServices;
 namespace LunaPC;
 
 /// <summary>
-/// Executa ações no Windows. Mantém SendInput como fallback, mas resolve nomes
-/// humanos de aplicativos para executáveis reais antes de iniciar um processo.
+/// Executa ações no Windows. Prioriza automação semântica quando disponível
+/// e mantém SendInput como fallback para mouse/teclado.
 /// </summary>
 internal sealed class ActionEngine
 {
@@ -51,6 +51,21 @@ internal sealed class ActionEngine
                 return "Abri " + a.Target + " (" + executable + ").";
             }
             case "open_url": Process.Start(new ProcessStartInfo(a.Url){UseShellExecute=true}); await Task.Delay(600,ct); return "Abri o site.";
+            case "activate_window":
+                if(!WindowsUiAutomation.TryActivateWindow(a.Target, out var activateMessage)) throw new InvalidOperationException(activateMessage);
+                return activateMessage;
+            case "ui_click":
+            {
+                var automationId = string.IsNullOrWhiteSpace(a.Arguments) ? null : a.Arguments;
+                if(!WindowsUiAutomation.TryInvoke(a.Target, a.Value, automationId, out var message)) throw new InvalidOperationException(message);
+                return message;
+            }
+            case "ui_type":
+            {
+                var automationId = string.IsNullOrWhiteSpace(a.Arguments) ? null : a.Arguments;
+                if(!WindowsUiAutomation.TrySetValue(a.Target, a.Value, a.Path, automationId, out var message)) throw new InvalidOperationException(message);
+                return message;
+            }
             case "run_process": Process.Start(new ProcessStartInfo(a.Target){Arguments=a.Arguments??"",UseShellExecute=true}); return "Executei "+a.Target+".";
             case "click": if(!SetCursorPos(a.X,a.Y)) throw new InvalidOperationException("Não consegui mover o mouse."); SendMouse(MOUSEEVENTF_LEFTDOWN);SendMouse(MOUSEEVENTF_LEFTUP);return $"Cliquei em ({a.X},{a.Y}).";
             case "move_mouse": if(!SetCursorPos(a.X,a.Y)) throw new InvalidOperationException("Não consegui mover o mouse.");return $"Mudei o mouse para ({a.X},{a.Y}).";
@@ -65,46 +80,23 @@ internal sealed class ActionEngine
         }
     }
 
-    /// <summary>
-    /// Converte o nome que o usuário fala/escreve em um alvo que o Windows consegue iniciar.
-    /// Também aceita nomes de executáveis e caminhos completos.
-    /// </summary>
     private static string ResolveApplication(string target)
     {
         var raw = (target ?? "").Trim().Trim('"');
-        var normalized = RemoveDiacritics(raw).ToLowerInvariant();
-        normalized = normalized.Replace("  ", " ");
-
+        var normalized = RemoveDiacritics(raw).ToLowerInvariant().Replace("  ", " ");
         var aliases = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["calculadora"] = "calc.exe",
-            ["calculator"] = "calc.exe",
-            ["calc"] = "calc.exe",
-            ["google chrome"] = "chrome.exe",
-            ["chrome"] = "chrome.exe",
-            ["navegador chrome"] = "chrome.exe",
-            ["microsoft edge"] = "msedge.exe",
-            ["edge"] = "msedge.exe",
-            ["navegador edge"] = "msedge.exe",
-            ["bloco de notas"] = "notepad.exe",
-            ["notepad"] = "notepad.exe",
-            ["explorador de arquivos"] = "explorer.exe",
-            ["explorador de ficheiros"] = "explorer.exe",
-            ["explorer"] = "explorer.exe",
-            ["gerenciador de tarefas"] = "taskmgr.exe",
-            ["task manager"] = "taskmgr.exe",
-            ["prompt de comando"] = "cmd.exe",
-            ["cmd"] = "cmd.exe",
-            ["powershell"] = "powershell.exe",
-            ["configuracoes"] = "ms-settings:",
-            ["configuracoes do windows"] = "ms-settings:"
+            ["calculadora"]="calc.exe",["calculator"]="calc.exe",["calc"]="calc.exe",
+            ["google chrome"]="chrome.exe",["chrome"]="chrome.exe",["navegador chrome"]="chrome.exe",
+            ["microsoft edge"]="msedge.exe",["edge"]="msedge.exe",["navegador edge"]="msedge.exe",
+            ["bloco de notas"]="notepad.exe",["notepad"]="notepad.exe",
+            ["explorador de arquivos"]="explorer.exe",["explorer"]="explorer.exe",
+            ["gerenciador de tarefas"]="taskmgr.exe",["task manager"]="taskmgr.exe",
+            ["prompt de comando"]="cmd.exe",["cmd"]="cmd.exe",["powershell"]="powershell.exe",
+            ["configuracoes"]="ms-settings:",["configuracoes do windows"]="ms-settings:"
         };
-
         if (aliases.TryGetValue(normalized, out var executable)) return executable;
         if (File.Exists(raw)) return raw;
-        if (raw.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || raw.Contains(':') || raw.Contains('\\')) return raw;
-
-        // Permite que o Windows resolva aplicativos registrados, atalhos e comandos disponíveis no PATH.
         return raw;
     }
 
@@ -116,7 +108,7 @@ internal sealed class ActionEngine
     }
 
     private static bool IsRisky(BrainAction a)=>a.Risk is "confirm" or "high"||a.Type is "delete_file" or "run_powershell" or "move_file";
-    private static string Describe(BrainAction a)=>a.Type switch{"click"=>$"Clicar em ({a.X},{a.Y})","type_text"=>"Digitar texto","key"=>$"Pressionar {a.Value}","delete_file"=>$"Excluir {a.Path}","move_file"=>$"Mover {a.Path} para {a.Destination}","run_powershell"=>$"Executar PowerShell: {a.Value}",_=>$"Executar {a.Type}: {a.Target}"};
+    private static string Describe(BrainAction a)=>a.Type switch{"click"=>$"Clicar em ({a.X},{a.Y})","ui_click"=>$"Clicar em '{a.Value}' na janela '{a.Target}'","ui_type"=>$"Preencher '{a.Value}' na janela '{a.Target}'","delete_file"=>$"Excluir {a.Path}","move_file"=>$"Mover {a.Path} para {a.Destination}","run_powershell"=>$"Executar PowerShell: {a.Value}",_=>$"Executar {a.Type}: {a.Target}"};
     private static string Quote(string s)=>"\""+(s??"").Replace("\"","\\\"")+"\"";
     private static void SendMouse(uint flags){var i=new INPUT{type=INPUT_MOUSE,U=new InputUnion{mi=new MOUSEINPUT{dwFlags=flags}}};if(SendInput(1,new[]{i},Marshal.SizeOf<INPUT>())!=1)throw new InvalidOperationException("O Windows recusou o mouse.");}
     private static void SendUnicodeText(string text){var list=new List<INPUT>();foreach(var c in text){list.Add(Key(c,false));list.Add(Key(c,true));}if(list.Count>0&&SendInput((uint)list.Count,list.ToArray(),Marshal.SizeOf<INPUT>())!=list.Count)throw new InvalidOperationException("O Windows recusou a digitação.");}
