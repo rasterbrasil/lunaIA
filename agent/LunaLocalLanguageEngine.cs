@@ -19,7 +19,9 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
     private bool _disposed;
 
     public bool IsModelReady => File.Exists(_modelPath) && _modelLoaded;
+    public bool IsModelInstalled => File.Exists(_modelPath);
     public string ModelPath => _modelPath;
+    public string ModelName => "Qwen3-4B-Q4_K_M";
 
     public LunaLocalLanguageEngine()
     {
@@ -44,6 +46,9 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
 
     public Task<string> ChatAsync(string userText, string systemPrompt, CancellationToken cancellationToken = default)
         => ChatAsync(userText, systemPrompt, maxTokens: 384, contextSize: 4096, disableThinking: true, cancellationToken);
+
+    public Task<string> ReasonAsync(string userText, string systemPrompt, CancellationToken cancellationToken = default)
+        => ChatAsync(userText, systemPrompt, maxTokens: 768, contextSize: 4096, disableThinking: false, cancellationToken);
 
     public async Task<string> ChatAsync(
         string userText,
@@ -75,7 +80,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
 
             var effectiveUserText = disableThinking
                 ? $"{userText.Trim()} /no_think"
-                : userText;
+                : $"{userText.Trim()} /think";
 
             var inference = new InferenceParams
             {
@@ -100,7 +105,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
 
             var answer = string.Concat(pieces).Trim();
             return string.IsNullOrWhiteSpace(answer)
-                ? "Meu motor local terminou o raciocínio sem produzir uma resposta textual."
+                ? "Meu motor local terminou sem produzir uma resposta textual."
                 : answer;
         }
         finally
