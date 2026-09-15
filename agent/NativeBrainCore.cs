@@ -3,10 +3,6 @@ using System.Text.Json;
 
 namespace LunaPC;
 
-/// <summary>
-/// Self-contained neural language core. No external model, API, runtime or service.
-/// The implementation is deliberately small at first so it can be trained and scaled locally.
-/// </summary>
 internal sealed class NativeBrainCore
 {
     private const int Vocab = 256;
@@ -38,19 +34,15 @@ internal sealed class NativeBrainCore
     private void Initialize()
     {
         var rng = new Random(1731);
-        float Scale(int fan) => MathF.Sqrt(2f / fan);
-        for (var i = 0; i < Vocab; i++)
-            for (var j = 0; j < _hidden; j++) _embedding[i, j] = (float)(rng.NextDouble() * 2 - 1) * Scale(Vocab);
-        for (var i = 0; i < _hidden; i++)
-            for (var j = 0; j < _hidden; j++) _recurrent[i, j] = (float)(rng.NextDouble() * 2 - 1) * Scale(_hidden);
-        for (var i = 0; i < _hidden; i++)
-            for (var j = 0; j < Vocab; j++) _output[i, j] = (float)(rng.NextDouble() * 2 - 1) * Scale(_hidden);
+        var scale = MathF.Sqrt(2f / _hidden);
+        for (var i = 0; i < Vocab; i++) for (var j = 0; j < _hidden; j++) _embedding[i, j] = (float)(rng.NextDouble() * 2 - 1) * scale;
+        for (var i = 0; i < _hidden; i++) for (var j = 0; j < _hidden; j++) _recurrent[i, j] = (float)(rng.NextDouble() * 2 - 1) * scale;
+        for (var i = 0; i < _hidden; i++) for (var j = 0; j < Vocab; j++) _output[i, j] = (float)(rng.NextDouble() * 2 - 1) * scale;
     }
 
-    public void Train(string corpus, int epochs = 2, float learningRate = 0.0035f, CancellationToken ct = default)
+    public void Train(string corpus, int epochs = 2, float learningRate = 0.0025f, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(corpus)) return;
-        var bytes = Encoding.UTF8.GetBytes(corpus);
+        var bytes = Encoding.UTF8.GetBytes(corpus ?? string.Empty);
         if (bytes.Length < 8) return;
         lock (_sync)
         {
@@ -61,27 +53,16 @@ internal sealed class NativeBrainCore
                 for (var p = 0; p < bytes.Length - sequence - 1; p += sequence)
                 {
                     ct.ThrowIfCancellationRequested();
-                    Array.Clear(hidden);
-                    var states = new float[sequence + 1, _hidden];
+                    Array.Clear(hidden, 0, hidden.Length);
                     for (var t = 0; t < sequence; t++)
                     {
-                        var x = bytes[p + t];
-                        for (var h = 0; h < _hidden; h++)
-                        {
-                            var sum = _embedding[x, h];
-                            for (var k = 0; k < _hidden; k++) sum += hidden[k] * _recurrent[k, h];
-                            hidden[h] = MathF.Tanh(sum);
-                            states[t + 1, h] = hidden[h];
-                        }
+                        var input = bytes[p + t];
+                        Step(input, hidden);
                         var target = bytes[p + t + 1];
-                        var probs = Softmax(hidden, target);
-                        for (var h = 0; h < _hidden; h++) _output[h, target] += learningRate * (1f - probs[target]) * hidden[h];
-                        for (var h = 0; h < _hidden; h++)
-                        {
-                            var grad = (1f - probs[target]) * _output[h, target];
-                            _embedding[x, h] += learningRate * grad * 0.02f;
-                        }
-                        _bias[target] += learningRate * (1f - probs[target]);
+                        var probs = Softmax(hidden);
+                        var error = 1f - probs[target];
+                        for (var h = 0; h < _hidden; h++) _output[h, target] += learningRate * error * hidden[h];
+                        _bias[target] += learningRate * error;
                     }
                 }
             }
@@ -90,13 +71,13 @@ internal sealed class NativeBrainCore
         }
     }
 
-    private float[] Softmax(float[] hidden, int target)
+    private float[] Softmax(float[] hidden)
     {
         var logits = new float[Vocab];
         var max = float.MinValue;
         for (var v = 0; v < Vocab; v++)
         {
-            float s = _bias[v];
+            var s = _bias[v];
             for (var h = 0; h < _hidden; h++) s += hidden[h] * _output[h, v];
             logits[v] = s;
             if (s > max) max = s;
@@ -116,16 +97,13 @@ internal sealed class NativeBrainCore
             var hidden = new float[_hidden];
             foreach (var b in bytes) Step(b, hidden);
             var result = new List<byte>();
-            var last = bytes[^1];
             for (var i = 0; i < maxBytes; i++)
             {
                 var next = Predict(hidden, temperature);
                 if (next == 0 || next == 10) break;
                 result.Add((byte)next);
                 Step((byte)next, hidden);
-                last = (byte)next;
             }
-            _ = last;
             return Encoding.UTF8.GetString(result.ToArray()).Trim();
         }
     }
@@ -147,7 +125,7 @@ internal sealed class NativeBrainCore
         var max = float.MinValue;
         for (var v = 0; v < Vocab; v++)
         {
-            float s = _bias[v];
+            var s = _bias[v];
             for (var h = 0; h < _hidden; h++) s += hidden[h] * _output[h, v];
             logits[v] = s / Math.Max(temperature, 0.05f);
             max = Math.Max(max, logits[v]);
@@ -161,15 +139,7 @@ internal sealed class NativeBrainCore
 
     private void Save()
     {
-        var data = new NativeWeights
-        {
-            Hidden = _hidden,
-            Embedding = Flatten(_embedding),
-            Recurrent = Flatten(_recurrent),
-            Output = Flatten(_output),
-            Bias = _bias,
-            Trained = _trained
-        };
+        var data = new NativeWeights { Hidden = _hidden, Embedding = Flatten(_embedding), Recurrent = Flatten(_recurrent), Output = Flatten(_output), Bias = _bias, Trained = _trained };
         File.WriteAllText(_weightsPath, JsonSerializer.Serialize(data));
     }
 
@@ -189,9 +159,17 @@ internal sealed class NativeBrainCore
 
     private static float[] Flatten(float[,] m)
     {
-        var a = new float[m.Length]; Buffer.BlockCopy(m, 0, a, 0, sizeof(float) * a.Length); return a;
+        var a = new float[m.GetLength(0) * m.GetLength(1)];
+        var n = 0;
+        for (var i = 0; i < m.GetLength(0); i++) for (var j = 0; j < m.GetLength(1); j++) a[n++] = m[i, j];
+        return a;
     }
-    private static void Unflatten(float[] a, float[,] m) => Buffer.BlockCopy(a, 0, m, 0, sizeof(float) * a.Length);
+
+    private static void Unflatten(float[] a, float[,] m)
+    {
+        var n = 0;
+        for (var i = 0; i < m.GetLength(0); i++) for (var j = 0; j < m.GetLength(1); j++) m[i, j] = a[n++];
+    }
 
     private sealed class NativeWeights
     {
