@@ -45,6 +45,11 @@ internal sealed class AiBrain : IDisposable
         var input = text.Trim();
         var lower = input.ToLowerInvariant();
 
+        // Status/knowledge questions must be handled before the training-command detector.
+        // They must never start a new training run merely because the user asks what happened.
+        if (IsTrainingStatusQuestion(lower))
+            return Task.FromResult<BrainDecision?>(CreateTrainingStatusDecision(input));
+
         if (IsInternetTrainingCommand(lower))
             return Task.FromResult<BrainDecision?>(StartInternetTraining(input, ct));
 
@@ -78,6 +83,39 @@ internal sealed class AiBrain : IDisposable
         }
         return Task.FromResult<BrainDecision?>(d);
     }
+
+    private BrainDecision CreateTrainingStatusDecision(string input)
+    {
+        var status = _internetTraining.GetStatus();
+        var response = status.Running
+            ? $"O treinamento está em andamento. Já foram coletados {status.Documents} documentos e processados {status.TrainedChunks} blocos."
+            : status.Documents > 0
+                ? $"O último treinamento terminou. Tenho {status.Documents} documentos públicos no corpus local e {status.TrainedChunks} blocos registrados. O checkpoint dos pesos está salvo localmente."
+                : "Ainda não há um corpus de internet registrado. Posso iniciar o treinamento com dados públicos licenciados.";
+
+        var d = new BrainDecision
+        {
+            Intent = "consultar_treinamento",
+            Goal = input,
+            Interpretation = "O usuário quer saber o estado ou o resultado do aprendizado pela internet.",
+            Plan = new() { "Consultar o corpus local", "Verificar o estado do treinamento", "Informar o resultado sem iniciar novo treinamento" },
+            Response = response,
+            Completed = true
+        };
+
+        lock (_sync)
+        {
+            _history.Add((input, d.Response));
+            while (_history.Count > 20) _history.RemoveAt(0);
+            _last = d;
+        }
+        return d;
+    }
+
+    private static bool IsTrainingStatusQuestion(string text)
+        => text.Contains("o que aprendeu") || text.Contains("o que voce aprendeu") || text.Contains("o que você aprendeu") ||
+           text.Contains("quanto aprendeu") || text.Contains("status do treinamento") || text.Contains("como esta o treinamento") ||
+           text.Contains("como está o treinamento") || text.Contains("terminou o treinamento") || text.Contains("treinamento terminou");
 
     private BrainDecision StartInternetTraining(string input, CancellationToken ct)
     {
