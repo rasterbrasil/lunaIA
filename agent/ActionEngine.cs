@@ -3,14 +3,11 @@ using System.Runtime.InteropServices;
 
 namespace LunaPC;
 
-/// <summary>
-/// Executa ações no Windows. Prioriza automação semântica quando disponível
-/// e mantém SendInput como fallback para mouse/teclado.
-/// </summary>
 internal sealed class ActionEngine
 {
     private const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1, MOUSEEVENTF_LEFTDOWN = 2, MOUSEEVENTF_LEFTUP = 4, KEYEVENTF_KEYUP = 2, KEYEVENTF_UNICODE = 4;
     private readonly Func<string, bool> _confirm;
+    private readonly AndroidCommandServer _android;
     [DllImport("user32.dll")] private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [StructLayout(LayoutKind.Sequential)] private struct INPUT { public uint type; public InputUnion U; }
@@ -18,7 +15,11 @@ internal sealed class ActionEngine
     [StructLayout(LayoutKind.Sequential)] private struct MOUSEINPUT { public int dx,dy; public uint mouseData,dwFlags,time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] private struct KEYBDINPUT { public ushort wVk,wScan; public uint dwFlags,time; public IntPtr dwExtraInfo; }
 
-    public ActionEngine(Func<string,bool> confirm) => _confirm=confirm;
+    public ActionEngine(Func<string,bool> confirm)
+    {
+        _confirm = confirm;
+        _android = new AndroidCommandServer();
+    }
 
     public async Task<ActionExecutionResult> ExecuteAsync(IEnumerable<BrainAction> actions,CancellationToken ct=default)
     {
@@ -36,36 +37,23 @@ internal sealed class ActionEngine
 
     private async Task<string> ExecuteOneAsync(BrainAction a,CancellationToken ct)
     {
+        if (a.Type.StartsWith("android_", StringComparison.OrdinalIgnoreCase))
+            return await _android.ExecuteAsync(a, ct);
+
         switch(a.Type)
         {
             case "open_app":
             {
                 var executable = ResolveApplication(a.Target);
-                var process = Process.Start(new ProcessStartInfo(executable)
-                {
-                    Arguments = a.Arguments ?? "",
-                    UseShellExecute = true
-                });
+                var process = Process.Start(new ProcessStartInfo(executable){Arguments=a.Arguments??"",UseShellExecute=true});
                 if (process is null) throw new InvalidOperationException("O Windows não conseguiu iniciar o aplicativo.");
                 await Task.Delay(900,ct);
                 return "Abri " + a.Target + " (" + executable + ").";
             }
             case "open_url": Process.Start(new ProcessStartInfo(a.Url){UseShellExecute=true}); await Task.Delay(600,ct); return "Abri o site.";
-            case "activate_window":
-                if(!WindowsUiAutomation.TryActivateWindow(a.Target, out var activateMessage)) throw new InvalidOperationException(activateMessage);
-                return activateMessage;
-            case "ui_click":
-            {
-                var automationId = string.IsNullOrWhiteSpace(a.Arguments) ? null : a.Arguments;
-                if(!WindowsUiAutomation.TryInvoke(a.Target, a.Value, automationId, out var message)) throw new InvalidOperationException(message);
-                return message;
-            }
-            case "ui_type":
-            {
-                var automationId = string.IsNullOrWhiteSpace(a.Arguments) ? null : a.Arguments;
-                if(!WindowsUiAutomation.TrySetValue(a.Target, a.Value, a.Path, automationId, out var message)) throw new InvalidOperationException(message);
-                return message;
-            }
+            case "activate_window": if(!WindowsUiAutomation.TryActivateWindow(a.Target,out var activateMessage)) throw new InvalidOperationException(activateMessage); return activateMessage;
+            case "ui_click": { var automationId=string.IsNullOrWhiteSpace(a.Arguments)?null:a.Arguments; if(!WindowsUiAutomation.TryInvoke(a.Target,a.Value,automationId,out var message)) throw new InvalidOperationException(message); return message; }
+            case "ui_type": { var automationId=string.IsNullOrWhiteSpace(a.Arguments)?null:a.Arguments; if(!WindowsUiAutomation.TrySetValue(a.Target,a.Value,a.Path,automationId,out var message)) throw new InvalidOperationException(message); return message; }
             case "run_process": Process.Start(new ProcessStartInfo(a.Target){Arguments=a.Arguments??"",UseShellExecute=true}); return "Executei "+a.Target+".";
             case "click": if(!SetCursorPos(a.X,a.Y)) throw new InvalidOperationException("Não consegui mover o mouse."); SendMouse(MOUSEEVENTF_LEFTDOWN);SendMouse(MOUSEEVENTF_LEFTUP);return $"Cliquei em ({a.X},{a.Y}).";
             case "move_mouse": if(!SetCursorPos(a.X,a.Y)) throw new InvalidOperationException("Não consegui mover o mouse.");return $"Mudei o mouse para ({a.X},{a.Y}).";
@@ -82,31 +70,12 @@ internal sealed class ActionEngine
 
     private static string ResolveApplication(string target)
     {
-        var raw = (target ?? "").Trim().Trim('"');
-        var normalized = RemoveDiacritics(raw).ToLowerInvariant().Replace("  ", " ");
-        var aliases = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["calculadora"]="calc.exe",["calculator"]="calc.exe",["calc"]="calc.exe",
-            ["google chrome"]="chrome.exe",["chrome"]="chrome.exe",["navegador chrome"]="chrome.exe",
-            ["microsoft edge"]="msedge.exe",["edge"]="msedge.exe",["navegador edge"]="msedge.exe",
-            ["bloco de notas"]="notepad.exe",["notepad"]="notepad.exe",
-            ["explorador de arquivos"]="explorer.exe",["explorer"]="explorer.exe",
-            ["gerenciador de tarefas"]="taskmgr.exe",["task manager"]="taskmgr.exe",
-            ["prompt de comando"]="cmd.exe",["cmd"]="cmd.exe",["powershell"]="powershell.exe",
-            ["configuracoes"]="ms-settings:",["configuracoes do windows"]="ms-settings:"
-        };
-        if (aliases.TryGetValue(normalized, out var executable)) return executable;
-        if (File.Exists(raw)) return raw;
-        return raw;
+        var raw=(target??"").Trim().Trim('"'); var normalized=RemoveDiacritics(raw).ToLowerInvariant().Replace("  "," ");
+        var aliases=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
+        { ["calculadora"]="calc.exe",["calculator"]="calc.exe",["calc"]="calc.exe",["google chrome"]="chrome.exe",["chrome"]="chrome.exe",["navegador chrome"]="chrome.exe",["microsoft edge"]="msedge.exe",["edge"]="msedge.exe",["navegador edge"]="msedge.exe",["bloco de notas"]="notepad.exe",["notepad"]="notepad.exe",["explorador de arquivos"]="explorer.exe",["explorer"]="explorer.exe",["gerenciador de tarefas"]="taskmgr.exe",["task manager"]="taskmgr.exe",["prompt de comando"]="cmd.exe",["cmd"]="cmd.exe",["powershell"]="powershell.exe",["configuracoes"]="ms-settings:",["configuracoes do windows"]="ms-settings:" };
+        if(aliases.TryGetValue(normalized,out var executable)) return executable; if(File.Exists(raw)) return raw; return raw;
     }
-
-    private static string RemoveDiacritics(string value)
-    {
-        var normalized = value.Normalize(System.Text.NormalizationForm.FormD);
-        var chars = normalized.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark).ToArray();
-        return new string(chars).Normalize(System.Text.NormalizationForm.FormC);
-    }
-
+    private static string RemoveDiacritics(string value){var normalized=value.Normalize(System.Text.NormalizationForm.FormD);var chars=normalized.Where(c=>System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)!=System.Globalization.UnicodeCategory.NonSpacingMark).ToArray();return new string(chars).Normalize(System.Text.NormalizationForm.FormC);}
     private static bool IsRisky(BrainAction a)=>a.Risk is "confirm" or "high"||a.Type is "delete_file" or "run_powershell" or "move_file";
     private static string Describe(BrainAction a)=>a.Type switch{"click"=>$"Clicar em ({a.X},{a.Y})","ui_click"=>$"Clicar em '{a.Value}' na janela '{a.Target}'","ui_type"=>$"Preencher '{a.Value}' na janela '{a.Target}'","delete_file"=>$"Excluir {a.Path}","move_file"=>$"Mover {a.Path} para {a.Destination}","run_powershell"=>$"Executar PowerShell: {a.Value}",_=>$"Executar {a.Type}: {a.Target}"};
     private static string Quote(string s)=>"\""+(s??"").Replace("\"","\\\"")+"\"";
