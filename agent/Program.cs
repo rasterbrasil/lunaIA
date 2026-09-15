@@ -33,6 +33,8 @@ internal sealed class LunaAgentContext : ApplicationContext
     private readonly PiperTts _speech;
     private readonly AiBrain _brain;
     private readonly Perception _perception;
+    private readonly ActionEngine _actions;
+    private readonly AutonomyEngine _autonomy;
     private int _listening;
 
     public LunaAgentContext()
@@ -40,12 +42,15 @@ internal sealed class LunaAgentContext : ApplicationContext
         _speech = new PiperTts();
         _brain = new AiBrain();
         _perception = new Perception();
+        _actions = new ActionEngine(ConfirmAction);
+        _autonomy = new AutonomyEngine(_brain, _perception, _actions);
 
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Falar com a LUNA (microfone)", null, (_, _) => StartListening());
         menu.Items.Add("Conversar por texto (sem microfone)", null, (_, _) => ShowTextTest());
         menu.Items.Add("👁 Ver estado do computador", null, (_, _) => ShowPerception());
+        menu.Items.Add("🧬 Ver memória operacional", null, (_, _) => ShowMemory());
         menu.Items.Add("Testar voz neural", null, (_, _) => Speak("Olá, Marcos. Eu sou a LUNA. Minha voz agora é neural, feminina e gerada localmente no seu computador."));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Sair", null, (_, _) => ExitThread());
@@ -57,9 +62,15 @@ internal sealed class LunaAgentContext : ApplicationContext
             Speak("LUNA PC iniciada. Não consegui registrar o atalho global Ctrl Alt L.");
         else
             Speak(_speech.IsReady
-                ? "LUNA PC iniciada. Meu cérebro, minha percepção e minha voz locais estão prontos."
-                : "LUNA PC iniciada. Meu cérebro e minha percepção locais estão prontos. A voz neural ainda precisa ser preparada.");
+                ? "LUNA PC iniciada. Meu cérebro, minha percepção, minha ação e minha memória locais estão prontos."
+                : "LUNA PC iniciada. Meu cérebro, minha percepção, minha ação e minha memória estão prontos. A voz neural ainda precisa ser preparada.");
         EnableStartup();
+    }
+
+    private bool ConfirmAction(string description)
+    {
+        using var dialog = new ConfirmationForm(description);
+        return dialog.ShowDialog() == DialogResult.Yes;
     }
 
     private void OnHotkey() => ShowTextTest();
@@ -82,6 +93,13 @@ internal sealed class LunaAgentContext : ApplicationContext
         {
             MessageBox.Show($"Não consegui analisar o estado do computador.\n\n{ex.Message}", "LUNA PC — Percepção", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private void ShowMemory()
+    {
+        var text = _brain.Memory.ForBrain(maxItems: 100);
+        using var form = new MemoryForm(text);
+        form.ShowDialog();
     }
 
     private void StartListening()
@@ -129,7 +147,6 @@ internal sealed class LunaAgentContext : ApplicationContext
         var trimmed = text.Trim();
         var lower = trimmed.ToLowerInvariant();
 
-        // Percepção explícita: estas solicitações usam a camada de observação antes do cérebro.
         if (lower.Contains("analise meu computador") || lower.Contains("analisa meu computador") || lower.Contains("estado do computador") || lower.Contains("veja meu computador") || lower.Contains("ver computador"))
         {
             var snapshot = _perception.CaptureForBrain();
@@ -150,16 +167,14 @@ internal sealed class LunaAgentContext : ApplicationContext
             catch (Exception ex) { return "Não consegui ler o arquivo: " + ex.Message; }
         }
 
-        // Quando o pedido claramente depende do estado atual do PC, o cérebro recebe uma observação atualizada.
-        var needsPerception = lower.Contains("tela") || lower.Contains("janela") || lower.Contains("erro") || lower.Contains("computador") || lower.Contains("pc") || lower.Contains("arquivo");
-        if (needsPerception)
+        // Todos os pedidos normais passam pelo agente: observar → entender → decidir → agir → observar → verificar.
+        try
         {
-            try { trimmed += "\n\nESTADO OBSERVADO DO COMPUTADOR:\n" + _perception.CaptureForBrain(); }
-            catch { trimmed += "\n\n[Percepção do computador indisponível neste momento.]"; }
+            var result = await _autonomy.ExecuteAsync(trimmed);
+            return result.Response;
         }
-
-        var finalDecision = await _brain.ThinkAsync(trimmed);
-        return finalDecision?.Response ?? "Meu cérebro local não retornou uma resposta.";
+        catch (OperationCanceledException) { return "Parei a tarefa antes de concluí-la."; }
+        catch (Exception ex) { return "Encontrei um problema ao executar a tarefa: " + ex.Message; }
     }
 
     private void Speak(string text) { if (_speech.IsReady) _speech.Speak(text); }
@@ -189,6 +204,23 @@ internal sealed class LunaAgentContext : ApplicationContext
     }
 }
 
+internal sealed class ConfirmationForm : Form
+{
+    public ConfirmationForm(string action)
+    {
+        Text = "LUNA PC — Confirmação necessária";
+        StartPosition = FormStartPosition.CenterScreen;
+        Width = 520; Height = 230;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false; MinimizeBox = false;
+        var label = new Label { Text = "⚠️ Esta ação pode alterar ou remover dados do computador.\n\nA LUNA quer:\n" + action + "\n\nDeseja permitir?", Left = 20, Top = 20, Width = 465, Height = 115 };
+        var yes = new Button { Text = "Sim, permitir", DialogResult = DialogResult.Yes, Left = 275, Top = 150, Width = 105, Height = 34 };
+        var no = new Button { Text = "Não", DialogResult = DialogResult.No, Left = 390, Top = 150, Width = 75, Height = 34 };
+        Controls.AddRange([label, yes, no]);
+        AcceptButton = yes; CancelButton = no;
+    }
+}
+
 internal sealed class PerceptionForm : Form
 {
     public PerceptionForm(ComputerSnapshot snapshot)
@@ -211,6 +243,18 @@ internal sealed class PerceptionForm : Form
     }
 }
 
+internal sealed class MemoryForm : Form
+{
+    public MemoryForm(string json)
+    {
+        Text = "LUNA PC — Memória operacional";
+        StartPosition = FormStartPosition.CenterScreen;
+        Width = 850; Height = 600;
+        var box = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, Font = new Font("Consolas", 10), Text = json };
+        Controls.Add(box);
+    }
+}
+
 internal sealed class TextCommandForm : Form
 {
     private readonly TextBox _input;
@@ -226,11 +270,11 @@ internal sealed class TextCommandForm : Form
         Width = 620; Height = 430;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false; MinimizeBox = false;
-        var title = new Label { Text = "🧠👁 LUNA PC — Cérebro + Percepção", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite sua mensagem. A LUNA interpreta linguagem natural e pode observar o estado do computador quando necessário.", Left = 20, Top = 55, Width = 560 };
+        var title = new Label { Text = "🧠👁🖐️🧬 LUNA PC — Agente", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+        var info = new Label { Text = "A LUNA interpreta, observa, age, verifica e aprende fatos operacionais confirmados. Ações potencialmente perigosas pedem confirmação.", Left = 20, Top = 55, Width = 560 };
         _conversation = new TextBox { Left = 20, Top = 82, Width = 560, Height = 230, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
         _input = new TextBox { Left = 20, Top = 325, Width = 455 };
-        _input.PlaceholderText = "Ex.: Luna, analise meu computador.";
+        _input.PlaceholderText = "Ex.: Luna, organize minha pasta de documentos.";
         _send = new Button { Text = "Enviar para a LUNA", Left = 485, Top = 323, Width = 95, Height = 34 };
         _send.Click += async (_, _) => await SubmitAsync();
         _input.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await SubmitAsync(); } };
