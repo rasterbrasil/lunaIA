@@ -15,6 +15,7 @@ internal sealed class InternetTrainingService : IDisposable
 
     private readonly string _brainDirectory;
     private readonly string _corpusPath;
+    private readonly string _statusPath;
     private readonly HttpClient _http;
     private TrainingProgressForm? _progressForm;
     private Thread? _progressThread;
@@ -25,20 +26,62 @@ internal sealed class InternetTrainingService : IDisposable
         _brainDirectory = brainDirectory;
         Directory.CreateDirectory(_brainDirectory);
         _corpusPath = Path.Combine(_brainDirectory, "internet-corpus-v1.jsonl");
+        _statusPath = Path.Combine(_brainDirectory, "internet-training-status.json");
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LunaPC", "2.2"));
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
+    public InternetTrainingStatus GetStatus()
+    {
+        var documents = CountCorpusDocuments();
+        var trainedChunks = 0;
+        var running = false;
+        try
+        {
+            if (File.Exists(_statusPath))
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(_statusPath));
+                var root = doc.RootElement;
+                if (root.TryGetProperty("trainedChunks", out var c)) trainedChunks = c.GetInt32();
+                if (root.TryGetProperty("running", out var r)) running = r.GetBoolean();
+            }
+        }
+        catch { }
+        return new InternetTrainingStatus(running, documents, trainedChunks, File.Exists(_corpusPath));
+    }
+
+    private int CountCorpusDocuments()
+    {
+        try
+        {
+            if (!File.Exists(_corpusPath)) return 0;
+            return File.ReadLines(_corpusPath).Count(line => !string.IsNullOrWhiteSpace(line));
+        }
+        catch { return 0; }
+    }
+
+    private void SaveStatus(bool running, int documents, int trainedChunks)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(new { running, documents, trainedChunks, updatedAt = DateTimeOffset.Now });
+            File.WriteAllText(_statusPath, json, new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
     public async Task<InternetTrainingResult> CollectAndTrainAsync(NativeTransformerBrain brain, CancellationToken ct = default)
     {
         StartProgressWindow();
+        SaveStatus(true, CountCorpusDocuments(), 0);
         Report("Conectando à fonte pública...", 2, 0, 0, 0, Batches + TrainingChunks + 2, "Iniciando coleta de dados da internet.");
         try
         {
             var documents = await CollectAsync(ct);
             if (documents.Count == 0)
             {
+                SaveStatus(false, CountCorpusDocuments(), 0);
                 Report("Nenhum documento foi obtido", 100, 0, 0, Batches + 1, Batches + TrainingChunks + 2, "Verifique a conexão com a internet e tente novamente.");
                 return new InternetTrainingResult(0, 0, "Nenhum documento novo foi obtido.");
             }
@@ -49,19 +92,27 @@ internal sealed class InternetTrainingService : IDisposable
             foreach (var chunk in chunks)
             {
                 ct.ThrowIfCancellationRequested();
-                trained++;
-                var percent = 55 + (int)(43.0 * trained / Math.Max(1, chunks.Count));
-                Report($"Treinando os pesos do Transformer... bloco {trained}/{chunks.Count}", percent, documents.Count, trained, Batches + 1 + trained, Batches + chunks.Count + 2, $"Backpropagation + AdamW no bloco {trained}.");
+                var percent = 55 + (int)(43.0 * (trained + 1) / Math.Max(1, chunks.Count));
+                Report($"Treinando os pesos do Transformer... bloco {trained + 1}/{chunks.Count}", percent, documents.Count, trained + 1, Batches + 1 + trained + 1, Batches + chunks.Count + 2, $"Backpropagation + AdamW no bloco {trained + 1}.");
                 brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct: ct);
+                trained++;
+                SaveStatus(true, CountCorpusDocuments(), trained);
                 await Task.Yield();
             }
+            SaveStatus(false, CountCorpusDocuments(), trained);
             Report("Treinamento concluído", 100, documents.Count, trained, Batches + chunks.Count + 2, Batches + chunks.Count + 2, $"Checkpoint salvo localmente. {documents.Count} documentos / {trained} blocos.");
             await Task.Delay(900);
             return new InternetTrainingResult(documents.Count, trained, _corpusPath);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            SaveStatus(false, CountCorpusDocuments(), 0);
             Report("Treinamento interrompido por erro", 100, 0, 0, 0, 1, ex.Message);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            SaveStatus(false, CountCorpusDocuments(), 0);
             throw;
         }
     }
@@ -185,3 +236,4 @@ internal sealed class InternetTrainingService : IDisposable
 }
 
 internal readonly record struct InternetTrainingResult(int Documents, int TrainingChunks, string CorpusPath);
+internal readonly record struct InternetTrainingStatus(bool Running, int Documents, int TrainedChunks, bool CorpusExists);
