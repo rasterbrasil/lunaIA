@@ -37,6 +37,12 @@ internal sealed class LunaCore : IDisposable
         if (IsDirectConversation(directIntent))
             return await ProcessNonToolIntentAsync(directIntent);
 
+        // Level 1: ordinary natural-language questions are answered directly by
+        // the local Qwen3 language engine. This keeps language separate from the
+        // action planner and lets the model speak Portuguese naturally.
+        if (LooksLikeDeepReasoningRequest(text))
+            return await AnswerWithLocalReasoningAsync(text);
+
         var thought = _autonomy.Think(text);
         var localThought = _brain.Think(text);
         var model = await _reasoner.ReasonAsync(new LunaModelRequest(text, BuildContext(localThought), thought.Intents));
@@ -59,6 +65,22 @@ internal sealed class LunaCore : IDisposable
         return single is null
             ? await AnswerWithLocalModelAsync(text)
             : await ExecuteAndVerifyAsync(single.RawText, single);
+    }
+
+    private static bool LooksLikeDeepReasoningRequest(string text)
+    {
+        var n = text.ToLowerInvariant();
+        return n.Contains("raciocine")
+            || n.Contains("raciocina")
+            || n.Contains("explique detalhadamente")
+            || n.Contains("explique passo a passo")
+            || n.Contains("resolva")
+            || n.Contains("calcule")
+            || n.Contains("analise")
+            || n.Contains("por que ")
+            || n.StartsWith("como funciona")
+            || n.StartsWith("qual a diferença")
+            || n.StartsWith("compare ");
     }
 
     private static bool IsDirectConversation(LunaIntent intent)
@@ -260,6 +282,17 @@ internal sealed class LunaCore : IDisposable
             return new(answer);
         }
         catch (Exception ex) { return new($"Meu motor local não conseguiu responder agora: {ex.Message}"); }
+    }
+
+    private async Task<LunaResult> AnswerWithLocalReasoningAsync(string text)
+    {
+        try
+        {
+            var prompt = $"Você é a LUNA IA, uma assistente local para Windows. Raciocine cuidadosamente sobre a pergunta e responda em português do Brasil. Entregue somente a resposta final, clara e útil, sem mencionar seu processo interno de raciocínio. Não invente fatos. Pergunta do usuário: {text}";
+            var answer = await _language.ReasonAsync(text, prompt);
+            return new(answer);
+        }
+        catch (Exception ex) { return new($"Meu motor local de raciocínio não conseguiu responder agora: {ex.Message}"); }
     }
 
     public void Dispose()
