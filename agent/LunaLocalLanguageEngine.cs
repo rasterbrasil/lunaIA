@@ -15,8 +15,6 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
     private readonly string _modelDirectory;
     private readonly string _modelPath;
     private LLamaWeights? _weights;
-    private LLamaContext? _context;
-    private InteractiveExecutor? _executor;
     private bool _modelLoaded;
     private bool _disposed;
 
@@ -38,14 +36,22 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         {
             await EnsureLoadedAsync(cancellationToken);
 
-            // LLamaSharp's supported chat pattern is to create a ChatSession
-            // with the initial history, then send a ChatHistory.Message for each
-            // user turn. Passing a complete ChatHistory into ChatAsync on an
-            // already-running session mixes two different history models and can
-            // leave the executor waiting on the second request.
+            // Reuse model weights, but create a fresh LLama context/KV cache for
+            // every independent request. Reusing the same context/executor caused
+            // the second request to stall because the previous conversation stayed
+            // in the KV cache.
+            var parameters = new ModelParams(_modelPath)
+            {
+                ContextSize = 8192,
+                GpuLayerCount = 0
+            };
+
+            using var context = await Task.Run(() => _weights!.CreateContext(parameters), cancellationToken);
+            using var executor = new InteractiveExecutor(context);
+
             var history = new ChatHistory();
             history.AddMessage(AuthorRole.System, systemPrompt);
-            var session = new ChatSession(_executor!, history);
+            var session = new ChatSession(executor, history);
             session.WithHistoryTransform(new PromptTemplateTransformer(_weights!, withAssistant: true));
 
             var inference = new InferenceParams
@@ -92,8 +98,6 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         };
 
         _weights = await Task.Run(() => LLamaWeights.LoadFromFile(parameters), cancellationToken);
-        _context = await Task.Run(() => _weights.CreateContext(parameters), cancellationToken);
-        _executor = new InteractiveExecutor(_context);
         _modelLoaded = true;
     }
 
@@ -128,10 +132,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         if (_disposed) return;
         _disposed = true;
         _modelLoaded = false;
-        _executor = null;
-        _context?.Dispose();
         _weights?.Dispose();
-        _context = null;
         _weights = null;
         _gate.Dispose();
     }
