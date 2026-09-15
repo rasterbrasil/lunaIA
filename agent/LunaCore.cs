@@ -30,6 +30,13 @@ internal sealed class LunaCore : IDisposable
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o que você quer que eu faça.");
         _memory.Remember(text);
 
+        // Conversational intents are deterministic. They must never enter the
+        // reasoning engine: this keeps greetings, identity and capability questions
+        // instant and prevents a normal conversation from being mistaken for an action.
+        var directIntent = LunaIntentParser.Parse(text);
+        if (IsDirectConversation(directIntent))
+            return await ProcessNonToolIntentAsync(directIntent);
+
         var thought = _autonomy.Think(text);
         var localThought = _brain.Think(text);
         var model = await _reasoner.ReasonAsync(new LunaModelRequest(text, BuildContext(localThought), thought.Intents));
@@ -53,6 +60,15 @@ internal sealed class LunaCore : IDisposable
             ? await AnswerWithLocalModelAsync(text)
             : await ExecuteAndVerifyAsync(single.RawText, single);
     }
+
+    private static bool IsDirectConversation(LunaIntent intent)
+        => intent.Kind is LunaIntentKind.Greeting
+            or LunaIntentKind.AskIdentity
+            or LunaIntentKind.AskCapabilities
+            or LunaIntentKind.AskTime
+            or LunaIntentKind.AskDate
+            or LunaIntentKind.AskMemory
+            or LunaIntentKind.AskActiveWindow;
 
     private static LunaCognitiveContext BuildContext(LunaThought thought)
         => new(thought.Goal, thought.Observation, [], [], thought.Knowledge, thought.Confidence);
@@ -165,7 +181,8 @@ internal sealed class LunaCore : IDisposable
         await Task.Yield();
         return intent.Kind switch
         {
-            LunaIntentKind.AskIdentity => new($"{LunaIdentity.Describe()} Esta instalação é a minha base local. Meu motor de linguagem agora também pode raciocinar e conversar localmente, sem Ollama e sem API de nuvem, quando o modelo estiver instalado."),
+            LunaIntentKind.AskIdentity => new($"{LunaIdentity.Describe()} Esta instalação é a minha base local. Meu motor de linguagem também pode raciocinar e conversar localmente, sem Ollama e sem API de nuvem, quando o modelo estiver instalado."),
+            LunaIntentKind.AskCapabilities => new("Eu consigo conversar com você, lembrar o contexto local, observar a tela, abrir aplicativos e pastas, controlar teclado e mouse, navegar na web, entrar no seu projeto do GitHub pela visão, verificar resultados e repetir ações seguras quando necessário. Quando uma tarefa exigir raciocínio, uso meu motor local para montar um plano e escolher as ferramentas."),
             LunaIntentKind.Greeting => new("Olá. Estou aqui. Meu núcleo local, minha memória, minha camada de raciocínio e meu motor de linguagem estão ativos."),
             LunaIntentKind.AskTime => new($"Agora são {DateTime.Now:HH:mm}."),
             LunaIntentKind.AskDate => new($"Hoje é {DateTime.Now:dd/MM/yyyy}."),
@@ -178,159 +195,77 @@ internal sealed class LunaCore : IDisposable
             LunaIntentKind.PressKey => WindowsControl.PressKey(intent.Value ?? string.Empty),
             LunaIntentKind.OpenFolder when intent.Target == "Downloads" => Open(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"), null, "Abrindo a pasta Downloads."),
             LunaIntentKind.OpenFolder when intent.Target == "Documents" => Open(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), null, "Abrindo Documentos."),
-            _ => await AnswerWithLocalModelAsync(intent.RawText)
+            _ => new("Ainda não tenho uma ferramenta local adequada para essa solicitação.")
         };
     }
 
-    private async Task<LunaResult> AnswerWithLocalModelAsync(string userText)
+    private static bool IsRetryableLaunch(string text)
+    {
+        var n = text.ToLowerInvariant();
+        return n.Contains("calculadora") || n.Contains("calculator") || n.Contains("notepad") || n.Contains("bloco de notas") || n.Contains("chrome") || n.Contains("edge") || n.Contains("github") || n.Contains("supabase") || n.Contains("vercel") || n.Contains("youtube") || n.Contains("google") || n.Contains("navegador");
+    }
+
+    private static LunaResult Open(string path, string? fileName, string message)
     {
         try
         {
-            var knowledge = LunaKnowledge.Search(userText);
-            var knowledgeText = knowledge.Count == 0
-                ? "Nenhum item específico da base local foi encontrado."
-                : string.Join("\n", knowledge.Take(4).Select(k => "- " + k.Content));
-
-            var systemPrompt = """
-Você é LUNA IA, uma assistente local para Windows. Você é a mesma identidade que está sendo construída neste computador: inteligente, direta, útil, curiosa, crítica e honesta.
-
-Princípios:
-- Responda em português do Brasil, salvo pedido contrário.
-- Não invente fatos, ações ou acesso a serviços.
-- Você é local: não diga que consultou a internet ou uma API se isso não aconteceu.
-- Quando não souber, diga claramente o que falta.
-- Pense passo a passo internamente, mas mostre ao usuário apenas a resposta útil e o raciocínio resumido quando ele for relevante.
-- Você pode conversar naturalmente, explicar assuntos, comparar alternativas, planejar tarefas e ajudar a decidir.
-- Quando uma tarefa exigir controle do Windows, a camada de ferramentas da LUNA fará a execução; não finja ter clicado, aberto ou verificado algo só porque foi solicitado.
-- Preserve a identidade LUNA IA e o contexto de que este projeto está sendo construído para ganhar autonomia progressivamente.
-
-Conhecimento local relevante:
-""" + knowledgeText;
-
-            // Local GGUF inference is CPU-heavy. Run the entire model call on a worker
-            // thread so WinForms never blocks its UI message loop while the model loads
-            // or generates tokens. The assistant window must remain responsive.
-            var answer = await Task.Run(() => _language.ChatAsync(userText, systemPrompt));
-            return new(answer, false);
+            var target = fileName is null ? path : Path.Combine(path, fileName);
+            Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true });
+            return new(message, true);
         }
-        catch (Exception ex)
-        {
-            return new($"Meu motor de linguagem local ainda não está disponível nesta instalação. Detalhe técnico: {ex.Message}");
-        }
+        catch (Exception ex) { return new($"Não consegui abrir o caminho solicitado: {ex.Message}"); }
     }
 
-    internal static LunaResult NavigateOrOpenBrowser(string url, string success)
+    private static LunaResult NavigateOrOpenBrowser(string url, string message)
     {
         try
         {
-            var activeTitle = WindowsControl.ActiveWindowTitle();
-            var activeIsBrowser = WindowsControl.IsBrowserWindowTitle(activeTitle);
-
-            if (activeIsBrowser)
+            if (WindowsControl.IsBrowserWindowTitle(WindowsControl.ActiveWindowTitle()))
             {
-                if (!WindowsControl.IsBlankBrowserWindowTitle(activeTitle))
-                {
-                    var newTab = WindowsControl.PressKey("ctrl+t");
-                    if (!newTab.Executed) return newTab;
-                    Thread.Sleep(500);
-                }
-            }
-            else
-            {
-                if (WindowsControl.ActivateExistingBrowserWindow())
-                {
-                    Thread.Sleep(250);
-                    var browserTitle = WindowsControl.ActiveWindowTitle();
-                    if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
-                    {
-                        var newTab = WindowsControl.PressKey("ctrl+t");
-                        if (!newTab.Executed) return newTab;
-                        Thread.Sleep(500);
-                    }
-                }
-                else
-                {
-                    var opened = WindowsControl.OpenNewBrowserWindow();
-                    if (!opened.Executed) return opened;
-                    Thread.Sleep(900);
-                    if (!WindowsControl.ActivateExistingBrowserWindow())
-                        return new($"{opened.Text} Abri o navegador, mas não consegui assumir a janela dele.", true);
-                    var browserTitle = WindowsControl.ActiveWindowTitle();
-                    if (!WindowsControl.IsBlankBrowserWindowTitle(browserTitle))
-                    {
-                        var newTab = WindowsControl.PressKey("ctrl+t");
-                        if (!newTab.Executed) return newTab;
-                        Thread.Sleep(500);
-                    }
-                }
+                WindowsControl.PressKey("ctrl+t");
+                Thread.Sleep(220);
+                WindowsControl.PressKey("ctrl+l");
+                WindowsControl.TypeText(url);
+                WindowsControl.PressKey("enter");
+                return new(message + " Abri em uma nova aba do navegador ativo.", true);
             }
 
-            var addressClick = LunaSemanticVision.ClickByNames(
-                "Address and search bar", "Address bar", "Search or enter address",
-                "Barra de endereços", "Barra de endereço", "Pesquisar ou inserir endereço",
-                "Pesquisar ou digitar endereço");
-            if (!addressClick.Executed)
+            if (WindowsControl.ActivateExistingBrowserWindow())
             {
-                var address = WindowsControl.PressKey("ctrl+l");
-                if (!address.Executed) return address;
+                Thread.Sleep(220);
+                WindowsControl.PressKey("ctrl+t");
+                Thread.Sleep(220);
+                WindowsControl.PressKey("ctrl+l");
+                WindowsControl.TypeText(url);
+                WindowsControl.PressKey("enter");
+                return new(message + " Reutilizei o navegador existente e abri uma nova aba.", true);
             }
 
-            Thread.Sleep(120);
-            var typed = WindowsControl.TypeText(url);
-            if (!typed.Executed) return typed;
-            var enter = WindowsControl.PressKey("enter");
-            return enter.Executed
-                ? new($"{success} Mantive a janela do navegador que você já estava usando e abri o destino em uma nova aba.", true)
-                : enter;
+            WindowsControl.OpenNewBrowserWindow();
+            Thread.Sleep(400);
+            WindowsControl.PressKey("ctrl+l");
+            WindowsControl.TypeText(url);
+            WindowsControl.PressKey("enter");
+            return new(message + " Abri uma nova janela do navegador porque não havia uma disponível.", true);
         }
-        catch (Exception ex) { return new($"Não consegui navegar no navegador: {ex.Message}"); }
+        catch (Exception ex) { return new($"Não consegui abrir o navegador: {ex.Message}"); }
     }
 
-    private static bool IsRetryableLaunch(string command)
+    private async Task<LunaResult> AnswerWithLocalModelAsync(string text)
     {
-        var n = Normalize(command);
-        return Has(n, "calculadora", "calculator", "calc", "bloco de notas", "notepad", "chrome", "google chrome", "edge", "microsoft edge", "navegador", "browser", "github", "supabase", "vercel", "youtube", "google", "meu projeto", "meu repositorio");
+        try
+        {
+            var prompt = $"Você é a LUNA IA, uma assistente local para Windows. Responda em português do Brasil de forma curta, natural e direta. Não invente ações executadas. Pergunta do usuário: {text}";
+            var answer = await _language.ChatAsync(text, prompt, maxTokens: 256, contextSize: 4096, disableThinking: true);
+            return new(answer);
+        }
+        catch (Exception ex) { return new($"Meu motor local não conseguiu responder agora: {ex.Message}"); }
     }
-
-    private static LunaResult Open(string fileOrFolder, string? arguments, string success)
-    {
-        try { var process = Process.Start(new ProcessStartInfo { FileName = fileOrFolder, Arguments = arguments ?? string.Empty, UseShellExecute = true }); return process is null ? new($"Não consegui abrir {fileOrFolder} neste computador.") : new(success, true); }
-        catch { return new($"Não consegui abrir {fileOrFolder} neste computador."); }
-    }
-
-    private static string Normalize(string value)
-    {
-        var form = value.ToLowerInvariant().Normalize(System.Text.NormalizationForm.FormD);
-        var chars = form.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark);
-        return new string(chars.ToArray()).Normalize(System.Text.NormalizationForm.FormC);
-    }
-    private static bool Has(string text, params string[] terms) => terms.Any(text.Contains);
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _language.Dispose();
-        _memory.Dispose();
     }
-}
-
-internal sealed class LunaMemory : IDisposable
-{
-    private readonly string _file;
-    private readonly List<string> _messages = [];
-    private bool _disposed;
-    public int Count => _messages.Count;
-    public LunaMemory()
-    {
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LunaPC", "memory");
-        Directory.CreateDirectory(dir); _file = Path.Combine(dir, "conversation.json");
-        try { if (File.Exists(_file)) _messages.AddRange(JsonSerializer.Deserialize<List<string>>(File.ReadAllText(_file))?.TakeLast(500) ?? []); } catch { }
-    }
-    public void Remember(string message)
-    {
-        if (_disposed || string.IsNullOrWhiteSpace(message)) return; _messages.Add(message); if (_messages.Count > 500) _messages.RemoveRange(0, _messages.Count - 500);
-        try { File.WriteAllText(_file, JsonSerializer.Serialize(_messages, new JsonSerializerOptions { WriteIndented = true })); } catch { }
-    }
-    public void Dispose() => _disposed = true;
 }
