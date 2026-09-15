@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -7,10 +6,10 @@ namespace LunaPC;
 
 /// <summary>
 /// Phase 2.2: obtains training material from a public, openly licensed source.
-/// This is data collection only: no external AI model, inference engine or API is used.
+/// This is data collection only: no external AI model, inference engine or AI API is used.
 /// The first source is Portuguese Wikipedia (CC BY-SA), accessed through its public API.
 /// </summary>
-internal sealed class InternetTrainingService
+internal sealed class InternetTrainingService : IDisposable
 {
     private const string Endpoint = "https://pt.wikipedia.org/w/api.php";
     private const int Batches = 3;
@@ -28,10 +27,7 @@ internal sealed class InternetTrainingService
         _brainDirectory = brainDirectory;
         Directory.CreateDirectory(_brainDirectory);
         _corpusPath = Path.Combine(_brainDirectory, "internet-corpus-v1.jsonl");
-        _http = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(25)
-        };
+        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LunaPC", "2.2"));
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -44,12 +40,11 @@ internal sealed class InternetTrainingService
 
         await SaveCorpusAsync(documents, ct);
 
-        var chunks = BuildTrainingChunks(documents);
         var trained = 0;
-        foreach (var chunk in chunks.Take(TrainingChunks))
+        foreach (var chunk in BuildTrainingChunks(documents).Take(TrainingChunks))
         {
             ct.ThrowIfCancellationRequested();
-            brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct);
+            brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct: ct);
             trained++;
             await Task.Yield();
         }
@@ -102,8 +97,7 @@ internal sealed class InternetTrainingService
         foreach (var document in documents)
         {
             ct.ThrowIfCancellationRequested();
-            var line = JsonSerializer.Serialize(document);
-            await writer.WriteLineAsync(line);
+            await writer.WriteLineAsync(JsonSerializer.Serialize(document));
         }
     }
 
@@ -147,6 +141,8 @@ internal sealed class InternetTrainingService
         }
         return sb.ToString().Trim();
     }
+
+    public void Dispose() => _http.Dispose();
 
     private sealed record InternetDocument(string Title, string Text);
 }
