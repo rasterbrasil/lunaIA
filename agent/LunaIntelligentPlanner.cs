@@ -34,6 +34,7 @@ internal sealed class LunaIntelligentPlanner
 Você é o planejador executivo local da LUNA IA.
 Sua função é transformar o objetivo do usuário em uma decisão executável.
 Não invente ferramentas. Use somente as ferramentas do catálogo abaixo.
+NÃO faça raciocínio oculto: este pedido usa o modo rápido /no_think.
 Se o pedido for apenas uma conversa/pergunta que não precisa de ferramenta, use mode=answer e escreva uma resposta curta em answer.
 Se o pedido exigir ações, use mode=execute e produza uma sequência ordenada de steps.
 Cada step deve representar uma ação concreta que possa ser executada por uma ferramenta do catálogo.
@@ -61,7 +62,16 @@ Objetivo do usuário:
 
         try
         {
-            var raw = await _language.ChatAsync(goal, prompt, cancellationToken);
+            // Planner calls are intentionally short and non-thinking. Its job is
+            // routing, not a long-form answer. This prevents the first real user
+            // request from appearing frozen while Qwen spends tokens reasoning.
+            var raw = await _language.ChatAsync(
+                goal,
+                prompt,
+                maxTokens: 256,
+                contextSize: 4096,
+                disableThinking: true,
+                cancellationToken);
             var json = ExtractJson(raw);
             if (json is null) return null;
             using var document = JsonDocument.Parse(json);
