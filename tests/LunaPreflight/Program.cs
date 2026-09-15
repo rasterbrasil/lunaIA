@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 
@@ -45,6 +46,41 @@ foreach (var input in negativeTraining)
 {
     var result = (bool)InvokeStatic(brainType, "IsInternetTrainingCommand", input.ToLowerInvariant());
     if (result) failures.Add($"Knowledge question incorrectly routed to training: {input}");
+}
+
+// Teste de integração real: executa o mesmo AiBrain.ThinkAsync usado pela interface.
+// Assim verificamos a resposta final, e não apenas o método de classificação.
+try
+{
+    var brain = Activator.CreateInstance(brainType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, null, null)
+        ?? throw new InvalidOperationException("Could not create AiBrain");
+    try
+    {
+        var thinkMethod = brainType.GetMethod("ThinkAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("AiBrain.ThinkAsync");
+        var stopwatch = Stopwatch.StartNew();
+        var task = thinkMethod.Invoke(brain, new object[] { "Quem é você?", CancellationToken.None }) as Task
+            ?? throw new InvalidOperationException("ThinkAsync did not return a Task");
+        task.GetAwaiter().GetResult();
+        stopwatch.Stop();
+
+        var decision = task.GetType().GetProperty("Result")?.GetValue(task);
+        var response = decision?.GetType().GetProperty("Response")?.GetValue(decision)?.ToString() ?? string.Empty;
+        if (!response.Contains("Eu sou a LUNA", StringComparison.Ordinal))
+            failures.Add($"Real ThinkAsync identity response failed: {response}");
+        if (stopwatch.ElapsedMilliseconds > 2000)
+            failures.Add($"Real ThinkAsync identity response was too slow: {stopwatch.ElapsedMilliseconds} ms");
+
+        Console.WriteLine($"REAL THINK TEST: PASS ({stopwatch.ElapsedMilliseconds} ms)");
+    }
+    finally
+    {
+        (brain as IDisposable)?.Dispose();
+    }
+}
+catch (Exception ex)
+{
+    failures.Add($"Real ThinkAsync test crashed: {ex.GetBaseException().Message}");
 }
 
 var temp = Path.Combine(Path.GetTempPath(), "LunaPreflight-" + Guid.NewGuid().ToString("N"));
@@ -105,4 +141,4 @@ if (failures.Count > 0)
 }
 
 Console.WriteLine("LUNA PREFLIGHT: PASS");
-Console.WriteLine("Routing, local knowledge indexing/ranking, and interrupted-training recovery passed.");
+Console.WriteLine("Real AiBrain conversation path, routing, local knowledge indexing/ranking, and interrupted-training recovery passed.");
