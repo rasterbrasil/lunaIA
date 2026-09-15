@@ -12,6 +12,7 @@ internal sealed class BrainDecision
     public string ClarificationQuestion { get; set; } = "";
     public bool Completed { get; set; }
     public List<BrainAction> Actions { get; set; } = new();
+    public List<MemoryUpdate> MemoryUpdates { get; set; } = new();
     public string Response { get; set; } = "";
 }
 
@@ -27,4 +28,11 @@ internal sealed class BrainAction
     public int X { get; set; }
     public int Y { get; set; }
     public string Risk { get; set; } = "safe";
+}
+
+internal sealed class MemoryUpdate
+{
+    public string Category { get; set; } = "";
+    public string Content { get; set; } = "";
+    public double Confidence { get; set; }
 }
