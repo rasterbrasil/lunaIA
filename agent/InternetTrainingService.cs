@@ -21,6 +21,9 @@ internal sealed class InternetTrainingService : IDisposable
     private readonly string _brainDirectory;
     private readonly string _corpusPath;
     private readonly HttpClient _http;
+    private TrainingProgressForm? _progressForm;
+    private Thread? _progressThread;
+    private readonly object _progressSync = new();
 
     public InternetTrainingService(string brainDirectory)
     {
@@ -34,22 +37,71 @@ internal sealed class InternetTrainingService : IDisposable
 
     public async Task<InternetTrainingResult> CollectAndTrainAsync(NativeTransformerBrain brain, CancellationToken ct = default)
     {
-        var documents = await CollectAsync(ct);
-        if (documents.Count == 0)
-            return new InternetTrainingResult(0, 0, "Nenhum documento novo foi obtido.");
+        StartProgressWindow();
+        Report("Conectando à fonte pública...", 2, 0, 0, 0, Batches + TrainingChunks + 2, "Iniciando coleta de dados da internet.");
 
-        await SaveCorpusAsync(documents, ct);
-
-        var trained = 0;
-        foreach (var chunk in BuildTrainingChunks(documents).Take(TrainingChunks))
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct: ct);
-            trained++;
-            await Task.Yield();
-        }
+            var documents = await CollectAsync(ct);
+            if (documents.Count == 0)
+            {
+                Report("Nenhum documento foi obtido", 100, 0, 0, Batches + 1, Batches + TrainingChunks + 2, "Verifique a conexão com a internet e tente novamente.");
+                return new InternetTrainingResult(0, 0, "Nenhum documento novo foi obtido.");
+            }
 
-        return new InternetTrainingResult(documents.Count, trained, _corpusPath);
+            Report("Salvando corpus local...", 55, documents.Count, 0, Batches + 1, Batches + TrainingChunks + 2, $"{documents.Count} documentos válidos coletados.");
+            await SaveCorpusAsync(documents, ct);
+
+            var trained = 0;
+            var chunks = BuildTrainingChunks(documents).Take(TrainingChunks).ToList();
+            foreach (var chunk in chunks)
+            {
+                ct.ThrowIfCancellationRequested();
+                trained++;
+                var percent = 55 + (int)(43.0 * trained / Math.Max(1, chunks.Count));
+                Report($"Treinando os pesos do Transformer... bloco {trained}/{chunks.Count}", percent, documents.Count, trained, Batches + 1 + trained, Batches + chunks.Count + 2, $"Backpropagation + AdamW no bloco {trained}.");
+                brain.Train(chunk, epochs: 1, learningRate: 0.0003f, ct: ct);
+                await Task.Yield();
+            }
+
+            Report("Treinamento concluído", 100, documents.Count, trained, Batches + chunks.Count + 2, Batches + chunks.Count + 2, $"Checkpoint salvo localmente. {documents.Count} documentos / {trained} blocos.");
+            await Task.Delay(900);
+            return new InternetTrainingResult(documents.Count, trained, _corpusPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Report("Treinamento interrompido por erro", 100, 0, 0, 0, 1, ex.Message);
+            throw;
+        }
+    }
+
+    private void StartProgressWindow()
+    {
+        lock (_progressSync)
+        {
+            if (_progressThread is { IsAlive: true }) return;
+            _progressThread = new Thread(() =>
+            {
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                using var form = new TrainingProgressForm();
+                _progressForm = form;
+                Application.Run(form);
+                _progressForm = null;
+            })
+            { IsBackground = true, IsThreadPoolThread = false };
+            _progressThread.SetApartmentState(ApartmentState.STA);
+            _progressThread.Start();
+        }
+    }
+
+    private void Report(string status, int percent, int documents, int chunks, int step, int totalSteps, string log)
+    {
+        var progress = new TrainingProgress(status, percent, documents, chunks, step, totalSteps, log);
+        var form = _progressForm;
+        if (form is not null && !form.IsDisposed)
+        {
+            try { form.Report(progress); } catch { }
+        }
     }
 
     private async Task<List<InternetDocument>> CollectAsync(CancellationToken ct)
@@ -60,6 +112,7 @@ internal sealed class InternetTrainingService : IDisposable
         for (var batch = 0; batch < Batches; batch++)
         {
             ct.ThrowIfCancellationRequested();
+            Report($"Coletando dados da internet... lote {batch + 1}/{Batches}", 5 + batch * 16, result.Count, 0, batch + 1, Batches + TrainingChunks + 2, $"Consultando Wikipédia em português (lote {batch + 1}).");
             var url = Endpoint +
                 "?action=query&generator=random&grnnamespace=0&grnlimit=" + PagesPerBatch +
                 "&prop=extracts&explaintext=1&exintro=0&format=json&formatversion=2";
@@ -85,6 +138,7 @@ internal sealed class InternetTrainingService : IDisposable
 
                 result.Add(new InternetDocument(title, cleaned));
             }
+            Report($"Lote {batch + 1}/{Batches} recebido", 18 + (batch + 1) * 12, result.Count, 0, batch + 1, Batches + TrainingChunks + 2, $"Documentos válidos até agora: {result.Count}.");
         }
 
         return result;
@@ -142,7 +196,11 @@ internal sealed class InternetTrainingService : IDisposable
         return sb.ToString().Trim();
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _http.Dispose();
+        try { if (_progressForm is { IsDisposed: false }) _progressForm.BeginInvoke(new Action(_progressForm.Close)); } catch { }
+    }
 
     private sealed record InternetDocument(string Title, string Text);
 }
