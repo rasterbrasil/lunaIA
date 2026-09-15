@@ -1,0 +1,1 @@
+Level 2 memory engine added. Persistent local memory stores conversations, explicit facts, preferences, projects, computers, applications, decisions and experiences.
