@@ -18,7 +18,7 @@ internal sealed class AiBrain : IDisposable
     private int _internetTrainingRunning;
 
     public OperationalMemory Memory { get; }
-    public string Model => "LUNA-NATIVE-TRANSFORMER-0.4-KNOWLEDGE-RETRIEVAL";
+    public string Model => "LUNA-NATIVE-TRANSFORMER-0.5-KNOWLEDGE-ROUTER";
     public BrainDecision? LastDecision => _last;
     public bool IsReady => !_disposed;
     public int ParameterCount => _neural.ParameterCount;
@@ -47,6 +47,11 @@ internal sealed class AiBrain : IDisposable
         var input = text.Trim();
         var lower = input.ToLowerInvariant();
 
+        // Routing order is intentional: a knowledge question must never be mistaken
+        // for a training command or a training-status question.
+        if (IsKnowledgeQuestion(lower))
+            return Task.FromResult<BrainDecision?>(CreateKnowledgeDecision(input));
+
         if (IsTrainingStatusQuestion(lower))
             return Task.FromResult<BrainDecision?>(CreateTrainingStatusDecision(input));
 
@@ -73,7 +78,7 @@ internal sealed class AiBrain : IDisposable
             d.Response = "Entendi o objetivo. Vou executar o próximo passo e verificar o resultado.";
 
         if (lower is "oi" or "olá" or "ola" or "bom dia" or "boa tarde" or "boa noite")
-            d.Response = "Olá, Marcos. Eu sou a LUNA. Meu cérebro Transformer nativo está funcionando localmente no computador.";
+            d.Response = "Olá. Eu sou a LUNA. Meu cérebro Transformer nativo está funcionando localmente no computador.";
 
         lock (_sync)
         {
@@ -82,6 +87,62 @@ internal sealed class AiBrain : IDisposable
             _last = d;
         }
         return Task.FromResult<BrainDecision?>(d);
+    }
+
+    private BrainDecision CreateKnowledgeDecision(string input)
+    {
+        var matches = _knowledge.Search(input, 5);
+        var context = _knowledge.BuildContext(input, 2600);
+        var response = GenerateKnowledgeResponse(input, matches, context);
+        var d = new BrainDecision
+        {
+            Intent = "consultar_conhecimento",
+            Goal = input,
+            Interpretation = "O usuário está perguntando sobre um assunto; devo consultar o conhecimento local sem iniciar treinamento.",
+            Plan = new() { "Identificar o assunto", "Pesquisar no corpus local", "Classificar os trechos relevantes", "Responder somente com informação encontrada" },
+            RelevantContext = new() { $"Trechos encontrados: {matches.Count}" },
+            Response = response,
+            Completed = true
+        };
+
+        lock (_sync)
+        {
+            _history.Add((input, d.Response));
+            while (_history.Count > 20) _history.RemoveAt(0);
+            _last = d;
+        }
+        return d;
+    }
+
+    private string GenerateKnowledgeResponse(string input, IReadOnlyList<KnowledgeMatch> matches, string context)
+    {
+        if (matches.Count == 0)
+            return "Não encontrei informação suficiente sobre esse assunto no meu conhecimento local. Posso pesquisar uma fonte pública na internet se você pedir.";
+
+        var prompt = "Responda à pergunta usando somente os trechos do conhecimento local abaixo. Seja breve e factual. Não invente fatos. Se os trechos não forem suficientes, diga isso.\nCONHECIMENTO LOCAL:\n" + context + "\nPERGUNTA:\n" + input + "\nRESPOSTA:";
+        var generated = _neural.Generate(prompt, 180, 0.35f);
+
+        if (IsUsableKnowledgeGeneration(generated, input))
+            return generated.Replace("LUNA:", "", StringComparison.Ordinal).Trim();
+
+        var sb = new System.Text.StringBuilder("Encontrei estas informações no meu conhecimento local:\n");
+        foreach (var match in matches.Take(3))
+            sb.AppendLine("• " + match.Text);
+        return sb.ToString().Trim();
+    }
+
+    private static bool IsUsableKnowledgeGeneration(string text, string question)
+    {
+        if (!IsUsableGeneratedText(text)) return false;
+        var lower = text.ToLowerInvariant();
+        if (lower.Contains("o último treinamento terminou") || lower.Contains("ultimo treinamento terminou") ||
+            lower.Contains("documentos públicos no corpus") || lower.Contains("documentos publicos no corpus") ||
+            lower.Contains("checkpoint dos pesos")) return false;
+        var terms = question.ToLowerInvariant()
+            .Split(new[] { ' ', '\t', '\r', '\n', '?', '!', '.', ',', ':', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x.Length >= 4)
+            .ToArray();
+        return terms.Length == 0 || terms.Any(lower.Contains);
     }
 
     private BrainDecision CreateTrainingStatusDecision(string input)
@@ -110,6 +171,23 @@ internal sealed class AiBrain : IDisposable
             _last = d;
         }
         return d;
+    }
+
+    private static bool IsKnowledgeQuestion(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (text.Contains("o que você sabe") || text.Contains("o que voce sabe") ||
+            text.Contains("o que sabe sobre") || text.Contains("o que voce conhece") || text.Contains("o que você conhece") ||
+            text.Contains("fale sobre") || text.Contains("explique ") || text.Contains("defina ") ||
+            text.Contains("quem foi ") || text.Contains("quem é ") || text.Contains("quem e ") ||
+            text.Contains("onde fica ") || text.Contains("por que ") || text.Contains("porque ") ||
+            text.Contains("como funciona ") || text.Contains("o que é ") || text.Contains("o que e "))
+            return true;
+
+        if (text.StartsWith("pesquise ") || text.StartsWith("pesquisa ") || text.StartsWith("procure ") || text.StartsWith("busque "))
+            return true;
+
+        return false;
     }
 
     private static bool IsTrainingStatusQuestion(string text)
