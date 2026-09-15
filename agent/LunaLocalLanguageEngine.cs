@@ -103,7 +103,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
                 if (!string.IsNullOrEmpty(piece)) pieces.Add(piece);
             }
 
-            var answer = string.Concat(pieces).Trim();
+            var answer = StripThinking(string.Concat(pieces).Trim());
             return string.IsNullOrWhiteSpace(answer)
                 ? "Meu motor local terminou sem produzir uma resposta textual."
                 : answer;
@@ -112,6 +112,15 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    private static string StripThinking(string text)
+    {
+        var end = text.LastIndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+        if (end >= 0) return text[(end + "</think>".Length)..].Trim();
+        var start = text.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+        if (start >= 0) return text[..start].Trim();
+        return text;
     }
 
     private async Task EnsureLoadedAsync(CancellationToken cancellationToken)
