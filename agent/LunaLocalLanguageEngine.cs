@@ -28,7 +28,16 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         _modelPath = Path.Combine(_modelDirectory, ModelFileName);
     }
 
-    public async Task<string> ChatAsync(string userText, string systemPrompt, CancellationToken cancellationToken = default)
+    public Task<string> ChatAsync(string userText, string systemPrompt, CancellationToken cancellationToken = default)
+        => ChatAsync(userText, systemPrompt, maxTokens: 384, contextSize: 4096, disableThinking: true, cancellationToken);
+
+    public async Task<string> ChatAsync(
+        string userText,
+        string systemPrompt,
+        int maxTokens,
+        uint contextSize,
+        bool disableThinking,
+        CancellationToken cancellationToken = default)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(LunaLocalLanguageEngine));
         await _gate.WaitAsync(cancellationToken);
@@ -36,13 +45,11 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
         {
             await EnsureLoadedAsync(cancellationToken);
 
-            // Reuse model weights, but create a fresh LLama context/KV cache for
-            // every independent request. Reusing the same context/executor caused
-            // the second request to stall because the previous conversation stayed
-            // in the KV cache.
+            // Model weights stay loaded once. Each request gets a fresh context/KV
+            // cache, which prevents state leaking between independent requests.
             var parameters = new ModelParams(_modelPath)
             {
-                ContextSize = 8192,
+                ContextSize = contextSize,
                 GpuLayerCount = 0
             };
 
@@ -54,13 +61,20 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
             var session = new ChatSession(executor, history);
             session.WithHistoryTransform(new PromptTemplateTransformer(_weights!, withAssistant: true));
 
+            // Qwen3 enables reasoning by default. For the fast local assistant and
+            // especially for planning JSON, disable thinking so the first real user
+            // request does not spend most of its budget in hidden <think> tokens.
+            var effectiveUserText = disableThinking
+                ? $"{userText.Trim()} /no_think"
+                : userText;
+
             var inference = new InferenceParams
             {
-                MaxTokens = 512,
+                MaxTokens = maxTokens,
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
-                    Temperature = 0.55f,
-                    TopP = 0.90f,
+                    Temperature = disableThinking ? 0.70f : 0.60f,
+                    TopP = disableThinking ? 0.80f : 0.95f,
                     TopK = 20
                 },
                 AntiPrompts = ["<|im_end|>", "<|endoftext|>"]
@@ -68,7 +82,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
 
             var pieces = new List<string>();
             await foreach (var piece in session.ChatAsync(
-                new ChatHistory.Message(AuthorRole.User, userText),
+                new ChatHistory.Message(AuthorRole.User, effectiveUserText),
                 inference,
                 cancellationToken))
             {
@@ -93,7 +107,7 @@ internal sealed class LunaLocalLanguageEngine : IDisposable
 
         var parameters = new ModelParams(_modelPath)
         {
-            ContextSize = 8192,
+            ContextSize = 4096,
             GpuLayerCount = 0
         };
 
