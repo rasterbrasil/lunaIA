@@ -39,7 +39,15 @@ internal sealed class AutonomyEngine
             cancellationToken.ThrowIfCancellationRequested();
             var observation = _perception.CaptureForBrain();
             var learned = _memory.ForBrain(objective, maxItems: 20, maxEpisodes: 10);
-            var prompt = $"""
+
+            // Conversas, perguntas de conhecimento/status e comandos de treinamento devem
+            // chegar ao cérebro exatamente como o usuário escreveu. Se colocarmos o objetivo
+            // dentro do prompt executivo primeiro, as próprias instruções e a memória podem
+            // conter frases como "o que aprendeu" e contaminar o roteamento.
+            var directRequest = IsDirectLanguageRequest(objective);
+            var brainInput = directRequest
+                ? objective.Trim()
+                : $"""
 OBJETIVO DO USUÁRIO:
 {objective.Trim()}
 
@@ -61,7 +69,7 @@ Depois da execução, o sistema observará novamente o computador e você decidi
 Nunca diga que concluiu algo que não foi verificado.
 """;
 
-            var decision = await _brain.ThinkAsync(prompt, cancellationToken);
+            var decision = await _brain.ThinkAsync(brainInput, cancellationToken);
             if (decision is null)
                 return new(false, "Não consegui tomar uma decisão no ciclo autônomo.", trace);
 
@@ -122,6 +130,44 @@ Nunca diga que concluiu algo que não foi verificado.
         }
 
         return new(false, $"Cheguei ao limite de {_maxCycles} ciclos sem confirmar a conclusão do objetivo.", trace);
+    }
+
+    private static bool IsDirectLanguageRequest(string objective)
+    {
+        var text = objective.Trim().ToLowerInvariant();
+        if (text.Length == 0) return false;
+
+        // Explicit action requests must continue through the full autonomous loop.
+        var actionMarkers = new[]
+        {
+            "abra ", "abrir ", "acesse ", "acessar ", "clique", "clicar", "digite ", "digitar ",
+            "escreva ", "escrever ", "mova ", "mover ", "crie ", "criar ", "copie ", "copiar ",
+            "mova ", "mover ", "delete ", "deletar ", "apague ", "apagar ", "execute ", "executar ",
+            "rode ", "rodar ", "instale ", "instalar ", "baixe ", "baixar ", "envie ", "enviar ",
+            "salve ", "salvar ", "renomeie ", "renomear ", "feche ", "fechar ", "bloqueie ", "desbloqueie "
+        };
+        if (actionMarkers.Any(text.Contains)) return false;
+
+        if (text is "quem é você?" or "quem é você" or "quem e você?" or "quem e você" or
+            "o que você é?" or "o que você é" or "o que voce e?" or "o que voce e" or
+            "como você funciona?" or "como você funciona" or "como voce funciona?" or "como voce funciona" or
+            "obrigado" or "obrigada" or "teste" or "testando") return true;
+
+        if (text.Contains("o que você sabe") || text.Contains("o que voce sabe") || text.Contains("o que sabe sobre") ||
+            text.Contains("o que você conhece") || text.Contains("o que voce conhece") || text.Contains("fale sobre") ||
+            text.Contains("explique ") || text.Contains("defina ") || text.Contains("quem foi ") || text.Contains("onde fica ") ||
+            text.Contains("por que ") || text.Contains("porque ") || text.Contains("como funciona ") || text.Contains("o que é ") ||
+            text.Contains("o que e ") || text.StartsWith("pesquise ") || text.StartsWith("pesquisa ") ||
+            text.StartsWith("procure ") || text.StartsWith("busque ")) return true;
+
+        if (text.Contains("o que aprendeu") || text.Contains("o que voce aprendeu") || text.Contains("o que você aprendeu") ||
+            text.Contains("quanto aprendeu") || text.Contains("status do treinamento") || text.Contains("como esta o treinamento") ||
+            text.Contains("como está o treinamento") || text.Contains("terminou o treinamento") || text.Contains("treinamento terminou")) return true;
+
+        if ((text.Contains("treine") || text.Contains("treinar") || text.Contains("treinamento")) &&
+            (text.Contains("internet") || text.Contains("web") || text.Contains("online") || text.Contains("wikipedia"))) return true;
+
+        return false;
     }
 }
 
