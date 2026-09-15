@@ -34,6 +34,7 @@ internal sealed class LunaAgentContext : ApplicationContext
     private readonly AiBrain _brain;
     private readonly Perception _perception;
     private readonly ActionEngine _actions;
+    private readonly OperationalMemory _memory;
     private readonly AutonomyEngine _autonomy;
     private int _listening;
 
@@ -41,9 +42,10 @@ internal sealed class LunaAgentContext : ApplicationContext
     {
         _speech = new PiperTts();
         _brain = new AiBrain();
+        _memory = _brain.Memory;
         _perception = new Perception();
         _actions = new ActionEngine(ConfirmAction);
-        _autonomy = new AutonomyEngine(_brain, _perception, _actions);
+        _autonomy = new AutonomyEngine(_brain, _perception, _actions, _memory);
 
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA PC — IA privada offline" };
         var menu = new ContextMenuStrip();
@@ -97,7 +99,7 @@ internal sealed class LunaAgentContext : ApplicationContext
 
     private void ShowMemory()
     {
-        var text = _brain.Memory.ForBrain(maxItems: 100);
+        var text = _memory.ForBrain(maxItems: 100);
         using var form = new MemoryForm(text);
         form.ShowDialog();
     }
