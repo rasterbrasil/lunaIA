@@ -22,7 +22,6 @@ internal sealed class LunaIntelligentAgent : IDisposable
         var text = input.Trim();
         if (string.IsNullOrWhiteSpace(text)) return new("Estou ouvindo. Diga o objetivo que você quer alcançar.");
 
-        // Conversas triviais continuam rápidas e determinísticas.
         var direct = LunaIntentParser.Parse(text);
         if (IsDirectConversation(direct))
             return await _fallback.ProcessAsync(text);
@@ -31,8 +30,7 @@ internal sealed class LunaIntelligentAgent : IDisposable
         LunaIntelligentPlan? plan;
         try
         {
-            // Keep every model operation away from the WinForms message loop.
-            plan = await Task.Run(() => _planner.CreateAsync(text, context, cancellationToken), cancellationToken).Unwrap();
+            plan = await Task.Run(async () => await _planner.CreateAsync(text, context, cancellationToken), cancellationToken);
         }
         catch (OperationCanceledException) { return new("Interrompi o planejamento desta tarefa."); }
         catch { plan = null; }
@@ -46,8 +44,6 @@ internal sealed class LunaIntelligentAgent : IDisposable
                 return await ExecutePlanAsync(plan, cancellationToken);
         }
 
-        // If the local planner cannot produce a valid plan, use the existing
-        // deterministic core rather than inventing an action or pretending success.
         return await _fallback.ProcessAsync(text);
     }
 
