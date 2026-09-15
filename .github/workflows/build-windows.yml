@@ -27,8 +27,8 @@ jobs:
       - name: Restore LUNA PC for win-x64
         run: dotnet restore agent/LunaPC.csproj -r win-x64
 
-      - name: Restore native preflight tests
-        run: dotnet restore tests/LunaPreflight/LunaPreflight.csproj
+      - name: Restore native preflight tests for win-x64
+        run: dotnet restore tests/LunaPreflight/LunaPreflight.csproj -r win-x64
 
       - name: Native preflight tests
         run: dotnet run --project tests/LunaPreflight/LunaPreflight.csproj -c Release --no-restore
