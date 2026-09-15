@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Speech.Recognition;
 using Microsoft.Win32;
 
@@ -24,9 +23,9 @@ internal sealed class LunaAgentContext : ApplicationContext
     private const uint ModAlt = 0x0001;
     private const uint VkL = 0x4C;
 
-    [DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-    [DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     private readonly NotifyIcon _tray;
@@ -112,25 +111,14 @@ internal sealed class LunaAgentContext : ApplicationContext
         catch { return null; }
     }
 
+    // Fase 1: nenhuma frase é transformada em uma ação por palavra-chave.
+    // Toda mensagem passa pelo cérebro, que interpreta intenção, contexto e plano.
     private async Task<string> HandleCommandAsync(string text)
     {
-        var command = text.Trim().ToLowerInvariant();
-        if (ContainsAny(command, "quem é você", "quem e voce", "o que você é", "o que voce e"))
-            return "Eu sou a LUNA, uma inteligência artificial pessoal e privada. Meu cérebro e minha voz podem funcionar localmente no seu computador, sem depender de uma API de terceiros.";
-
-        if (ContainsAny(command, "abra o chrome", "abrir o chrome", "abre o chrome", "abra chrome"))
-            return TryStart("chrome.exe") ? "Abrindo o Chrome." : "Não encontrei o Chrome instalado neste computador.";
-
-        if (ContainsAny(command, "abra meu github", "abrir meu github", "abre meu github", "abra o github"))
-        {
-            OpenUrl("https://github.com/rasterbrasil/lunaIA");
-            return "Abrindo o GitHub da LUNA PC. Essa ação precisa de internet.";
-        }
-
-        var answer = await _brain.AskAsync(text);
-        return string.IsNullOrWhiteSpace(answer)
-            ? "Meu cérebro local não retornou uma resposta. Verifique se o motor local de IA está ligado."
-            : answer;
+        var decision = await _brain.ThinkAsync(text);
+        if (decision is null || string.IsNullOrWhiteSpace(decision.Response))
+            return "Meu cérebro local não retornou uma resposta. Verifique se o motor local de IA está ligado.";
+        return decision.Response.Trim();
     }
 
     private void Speak(string text)
@@ -138,16 +126,6 @@ internal sealed class LunaAgentContext : ApplicationContext
         if (_speech.IsReady)
             _speech.Speak(text);
     }
-
-    private static bool ContainsAny(string text, params string[] values) => values.Any(text.Contains);
-
-    private static bool TryStart(string fileName)
-    {
-        try { Process.Start(new ProcessStartInfo { FileName = fileName, UseShellExecute = true }); return true; }
-        catch { return false; }
-    }
-
-    private static void OpenUrl(string url) => Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
 
     private static void EnableStartup()
     {
@@ -190,10 +168,10 @@ internal sealed class TextCommandForm : Form
         MaximizeBox = false; MinimizeBox = false;
 
         var title = new Label { Text = "🧠 LUNA PC — Cérebro local", Left = 20, Top = 18, Width = 560, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
-        var info = new Label { Text = "Digite sua mensagem. Não precisa de microfone. Você pode fazer várias perguntas seguidas.", Left = 20, Top = 55, Width = 560 };
+        var info = new Label { Text = "Digite sua mensagem. A LUNA interpreta linguagem natural, usa o contexto e cria um plano antes de responder.", Left = 20, Top = 55, Width = 560 };
         _conversation = new TextBox { Left = 20, Top = 82, Width = 560, Height = 230, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
         _input = new TextBox { Left = 20, Top = 325, Width = 455 };
-        _input.PlaceholderText = "Ex.: Luna, como você está?";
+        _input.PlaceholderText = "Ex.: Luna, preciso organizar meus arquivos por tipo e depois fazer um backup.";
         _send = new Button { Text = "Enviar para a LUNA", Left = 485, Top = 323, Width = 95, Height = 34 };
         _send.Click += async (_, _) => await SubmitAsync();
         _input.KeyDown += async (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; await SubmitAsync(); } };
