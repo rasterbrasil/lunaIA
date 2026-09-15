@@ -12,6 +12,7 @@ internal sealed class InternetTrainingService : IDisposable
     private const int MaxDocumentCharacters = 6000;
     private const int TrainingChunks = 24;
     private const int ChunkCharacters = 900;
+    private const int StaleTrainingMinutes = 2;
 
     private readonly string _brainDirectory;
     private readonly string _corpusPath;
@@ -30,10 +31,12 @@ internal sealed class InternetTrainingService : IDisposable
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LunaPC", "2.2"));
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        RecoverInterruptedTraining();
     }
 
     public InternetTrainingStatus GetStatus()
     {
+        RecoverInterruptedTraining();
         var documents = CountCorpusDocuments();
         var trainedChunks = 0;
         var running = false;
@@ -49,6 +52,43 @@ internal sealed class InternetTrainingService : IDisposable
         }
         catch { }
         return new InternetTrainingStatus(running, documents, trainedChunks, File.Exists(_corpusPath));
+    }
+
+    /// <summary>Shows immediate, truthful UI feedback before network collection begins.</summary>
+    public void ShowTrainingRequested()
+    {
+        StartProgressWindow();
+        SaveStatus(true, CountCorpusDocuments(), 0);
+        Report("🧠 TREINAMENTO SOLICITADO", 1, CountCorpusDocuments(), 0, 0, Batches + TrainingChunks + 2, "🌐 Conectando à Wikipédia...");
+    }
+
+    private void RecoverInterruptedTraining()
+    {
+        try
+        {
+            if (!File.Exists(_statusPath)) return;
+            using var doc = JsonDocument.Parse(File.ReadAllText(_statusPath));
+            var root = doc.RootElement;
+            var running = root.TryGetProperty("running", out var r) && r.GetBoolean();
+            if (!running) return;
+
+            var stale = true;
+            if (root.TryGetProperty("updatedAt", out var updated) && updated.ValueKind == JsonValueKind.String &&
+                DateTimeOffset.TryParse(updated.GetString(), out var timestamp))
+            {
+                stale = DateTimeOffset.Now - timestamp > TimeSpan.FromMinutes(StaleTrainingMinutes);
+            }
+
+            // A new LunaPC process cannot own a training session created by an older
+            // process. If the marker is stale, recover it instead of blocking future runs.
+            if (stale)
+                SaveStatus(false, CountCorpusDocuments(), 0);
+        }
+        catch
+        {
+            // A corrupt/stale status marker must never prevent training from being retried.
+            try { SaveStatus(false, CountCorpusDocuments(), 0); } catch { }
+        }
     }
 
     private int CountCorpusDocuments()
@@ -75,7 +115,7 @@ internal sealed class InternetTrainingService : IDisposable
     {
         StartProgressWindow();
         SaveStatus(true, CountCorpusDocuments(), 0);
-        Report("Conectando à fonte pública...", 2, 0, 0, 0, Batches + TrainingChunks + 2, "Iniciando coleta de dados da internet.");
+        Report("🌐 Conectando à Wikipédia...", 2, 0, 0, 0, Batches + TrainingChunks + 2, "Iniciando coleta de dados da internet.");
         try
         {
             var documents = await CollectAsync(ct);
