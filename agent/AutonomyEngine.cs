@@ -27,7 +27,8 @@ internal sealed class AutonomyEngine
             return new(false, "Objetivo vazio.", new List<string>());
 
         var trace = new List<string>();
-        ComputerSnapshot initial = _perception.Capture();
+        trace.Add("Memória operacional consultada.");
+        _ = _perception.Capture();
         trace.Add("Observação inicial concluída.");
 
         for (var cycle = 1; cycle <= _maxCycles; cycle++)
@@ -43,8 +44,9 @@ CICLO ATUAL: {cycle} de {_maxCycles}
 ESTADO OBSERVADO AGORA:
 {observation}
 
-Você está operando em um ciclo autônomo. Compare o estado atual com o objetivo.
-Decida o próximo passo. Se o objetivo já foi alcançado, marque completed=true e actions=[].
+Você está operando como agente autônomo. Compare o estado atual com o objetivo e decida o próximo passo.
+Se for uma conversa, pergunta ou explicação que não exige ação no computador, responda normalmente com actions=[].
+Se o objetivo já foi alcançado e isso estiver confirmado pelo estado observado, marque completed=true e actions=[].
 Se ainda não foi alcançado, gere SOMENTE as ações necessárias para o próximo passo.
 Depois da execução, o sistema observará novamente o computador e você decidirá o próximo passo.
 Nunca diga que concluiu algo que não foi verificado.
@@ -57,38 +59,32 @@ Nunca diga que concluiu algo que não foi verificado.
             if (decision.NeedsClarification)
                 return new(false, decision.ClarificationQuestion, trace);
 
-            if (IsComplete(decision))
+            if (decision.Completed)
             {
-                trace.Add($"Ciclo {cycle}: objetivo considerado concluído pelo cérebro.");
+                trace.Add($"Ciclo {cycle}: conclusão confirmada pelo cérebro.");
                 return new(true, decision.Response, trace);
             }
 
             if (decision.Actions.Count == 0)
             {
-                trace.Add($"Ciclo {cycle}: nenhuma ação necessária neste momento.");
-                return new(false, decision.Response, trace);
+                trace.Add($"Ciclo {cycle}: nenhuma ação necessária; resposta entregue.");
+                return new(true, decision.Response, trace);
             }
 
             trace.Add($"Ciclo {cycle}: executando {decision.Actions.Count} ação(ões).");
             var execution = await _actions.ExecuteAsync(decision.Actions, cancellationToken);
             trace.AddRange(execution.Results.Select(r => $"Ciclo {cycle}: {r}"));
 
+            if (execution.Results.Any(r => r.StartsWith("Cancelada pelo usuário:", StringComparison.OrdinalIgnoreCase)))
+                return new(false, "Parei porque uma ação precisava de confirmação e ela não foi autorizada.", trace);
+
             if (execution.Results.Any(r => r.StartsWith("Falhou:", StringComparison.OrdinalIgnoreCase)))
-            {
                 trace.Add($"Ciclo {cycle}: falha detectada; próximo ciclo fará nova observação e replanejamento.");
-            }
 
             await Task.Delay(150, cancellationToken);
         }
 
         return new(false, $"Cheguei ao limite de {_maxCycles} ciclos sem confirmar a conclusão do objetivo.", trace);
-    }
-
-    private static bool IsComplete(BrainDecision decision)
-    {
-        if (decision.Actions.Count > 0) return false;
-        var text = $"{decision.Intent} {decision.Response} {decision.Interpretation}".ToLowerInvariant();
-        return text.Contains("conclu") || text.Contains("objetivo alcançado") || text.Contains("já foi feito") || text.Contains("já está pronto");
     }
 }
 
