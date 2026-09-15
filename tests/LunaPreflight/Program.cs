@@ -52,8 +52,17 @@ Directory.CreateDirectory(temp);
 try
 {
     var corpusPath = Path.Combine(temp, "internet-corpus-v1.jsonl");
-    File.WriteAllText(corpusPath, JsonSerializer.Serialize(new { Title = "Brasil", Text = "Brasil é um país da América do Sul. Sua capital é Brasília." }) + Environment.NewLine +
-                              JsonSerializer.Serialize(new { Title = "Computador", Text = "Um computador é uma máquina eletrônica capaz de processar dados." }) + Environment.NewLine);
+    File.WriteAllText(corpusPath,
+        JsonSerializer.Serialize(new
+        {
+            Title = "Brasil",
+            Text = "Brasil é um país da América do Sul e possui Brasília como sua capital federal, além de grande diversidade geográfica e cultural."
+        }) + Environment.NewLine +
+        JsonSerializer.Serialize(new
+        {
+            Title = "Computador",
+            Text = "Um computador é uma máquina eletrônica capaz de processar dados, executar programas e armazenar informações de maneira controlada."
+        }) + Environment.NewLine);
 
     var knowledgeType = assembly.GetType("LunaPC.KnowledgeMemory") ?? throw new InvalidOperationException("KnowledgeMemory not found");
     var knowledge = Activator.CreateInstance(knowledgeType, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new object[] { temp }, null)
