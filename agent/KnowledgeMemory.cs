@@ -18,7 +18,7 @@ internal sealed class KnowledgeMemory
         "menos","sobre","entre","também","tambem","ser","são","sao","foi","era","sua","seu","suas","seus",
         "ao","aos","à","às","ate","até","já","ja","muito","muita","muitos","muitas","pode","podem",
         "sabe","sabem","conhece","conhecem","fale","falar","explique","explicar","defina","definir","diga","dizer",
-        "pesquise","pesquisa","procure","procurar","busque","buscar","quero","quero","sobre","assunto"
+        "pesquise","pesquisa","procure","procurar","busque","buscar","quero","assunto"
     };
 
     private readonly string _corpusPath;
@@ -39,25 +39,27 @@ internal sealed class KnowledgeMemory
         if (terms.Count == 0) return Array.Empty<KnowledgeMatch>();
 
         var results = new List<KnowledgeMatch>();
+        var seenPassages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var document in LoadDocuments())
         {
             var normalizedTitle = Normalize(document.Title);
-            var titleHits = terms.Count(term => TitleMatches(normalizedTitle, term));
+            var exactTitleHits = terms.Count(term => ExactTitleMatch(normalizedTitle, term));
+            var fuzzyTitleHits = terms.Count(term => FuzzyTitleMatch(normalizedTitle, term));
 
             foreach (var passage in SplitPassages(document.Text))
             {
                 var normalized = Normalize(passage);
-                var score = Score(terms, normalized, normalizedTitle, titleHits);
+                var score = Score(terms, normalized, normalizedTitle, exactTitleHits, fuzzyTitleHits);
                 if (score <= 0) continue;
 
-                // For a one-topic question such as "sobre o Brasil", require the
-                // topic to be present in the title or repeatedly in the passage.
-                // This prevents a random mention of "Brasil" from winning.
                 var coverage = terms.Count(t => ContainsTopic(normalized, t));
-                if (terms.Count == 1 && titleHits == 0 && coverage == 0) continue;
-                if (terms.Count >= 2 && titleHits == 0 && coverage < 2) continue;
+                if (terms.Count == 1 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage == 0) continue;
+                if (terms.Count >= 2 && exactTitleHits == 0 && fuzzyTitleHits == 0 && coverage < 2) continue;
 
-                results.Add(new KnowledgeMatch(document.Title, passage.Trim(), score));
+                var key = document.Title + "\n" + passage.Trim();
+                if (seenPassages.Add(key))
+                    results.Add(new KnowledgeMatch(document.Title, passage.Trim(), score));
             }
         }
 
@@ -123,14 +125,17 @@ internal sealed class KnowledgeMemory
         }
     }
 
-    private static int Score(List<string> terms, string normalizedText, string normalizedTitle, int titleHits)
+    private static int Score(List<string> terms, string normalizedText, string normalizedTitle, int exactTitleHits, int fuzzyTitleHits)
     {
-        var score = titleHits * 30;
+        // Exact subject titles dominate. A question about "Brasil" should rank
+        // an article titled "Brasil" above an article that merely says "brasileira".
+        var score = exactTitleHits * 40 + Math.Max(0, fuzzyTitleHits - exactTitleHits) * 10;
         foreach (var term in terms)
         {
             var textHits = CountWhole(normalizedText, term);
             if (textHits > 0) score += Math.Min(12, textHits * 4);
-            if (TitleMatches(normalizedTitle, term)) score += 25;
+            if (ExactTitleMatch(normalizedTitle, term)) score += 25;
+            else if (FuzzyTitleMatch(normalizedTitle, term)) score += 5;
         }
 
         var coverage = terms.Count(t => ContainsTopic(normalizedText, t));
@@ -138,13 +143,16 @@ internal sealed class KnowledgeMemory
         return score;
     }
 
-    private static bool TitleMatches(string title, string term)
+    private static bool ExactTitleMatch(string title, string term)
+        => title.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Any(word => string.Equals(word, term, StringComparison.Ordinal));
+
+    private static bool FuzzyTitleMatch(string title, string term)
     {
-        if (title.Contains(term, StringComparison.Ordinal)) return true;
+        if (ExactTitleMatch(title, term)) return true;
         // Small Portuguese morphological tolerance: brasil -> brasileira/brasileiro.
-        if (term.Length >= 5 && title.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Any(word => word.StartsWith(term, StringComparison.Ordinal) && word.Length <= term.Length + 5)) return true;
-        return false;
+        return term.Length >= 5 && title.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Any(word => word.StartsWith(term, StringComparison.Ordinal) && word.Length <= term.Length + 5);
     }
 
     private static bool ContainsTopic(string text, string term)
