@@ -14,7 +14,7 @@ internal sealed class AiBrain : IDisposable
     private bool _disposed;
 
     public OperationalMemory Memory { get; }
-    public string Model => "LUNA-NATIVE-TRANSFORMER-0.2";
+    public string Model => "LUNA-NATIVE-TRANSFORMER-0.3-FULL-BACKPROP";
     public BrainDecision? LastDecision => _last;
     public bool IsReady => !_disposed;
     public int ParameterCount => _neural.ParameterCount;
@@ -26,7 +26,7 @@ internal sealed class AiBrain : IDisposable
         Memory = new OperationalMemory();
         _neural = new NativeTransformerBrain(data);
         if (!_neural.IsTrained)
-            _neural.Train(SeedCorpus, epochs: 1, learningRate: 0.01f);
+            _neural.Train(SeedCorpus, epochs: 1, learningRate: 0.0008f);
     }
 
     public Task<string?> AskAsync(string text, CancellationToken ct = default)
