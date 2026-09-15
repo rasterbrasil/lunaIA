@@ -16,12 +16,12 @@ internal static class Program
 internal sealed class LunaApplication : ApplicationContext
 {
     private readonly NotifyIcon _tray;
-    private readonly LunaCore _core;
+    private readonly LunaIntelligentAgent _core;
     private LunaChatForm? _chat;
 
     public LunaApplication()
     {
-        _core = new LunaCore();
+        _core = new LunaIntelligentAgent();
         _tray = new NotifyIcon { Icon = SystemIcons.Application, Visible = true, Text = "LUNA IA" };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Abrir LUNA IA", null, (_, _) => ShowChat());
@@ -50,7 +50,7 @@ internal sealed class LunaApplication : ApplicationContext
 
 internal sealed class LunaChatForm : Form
 {
-    private readonly LunaCore _core;
+    private readonly LunaIntelligentAgent _core;
     private readonly RichTextBox _conversation;
     private readonly TextBox _input;
     private readonly Button _send;
@@ -68,7 +68,7 @@ internal sealed class LunaChatForm : Form
     private static readonly Color Accent = Color.FromArgb(56, 214, 255);
     private static readonly Color Accent2 = Color.FromArgb(113, 91, 255);
 
-    public LunaChatForm(LunaCore core)
+    public LunaChatForm(LunaIntelligentAgent core)
     {
         _core = core;
         Text = "LUNA IA"; StartPosition = FormStartPosition.CenterScreen;
