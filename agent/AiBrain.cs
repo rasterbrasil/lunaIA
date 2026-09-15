@@ -3,13 +3,14 @@ namespace LunaPC;
 /// <summary>
 /// LUNA's local cognitive layer. No Ollama, no external model, no AI API.
 /// The language core is a Transformer implemented directly in C# and trained locally.
-/// InternetTrainingService supplies openly licensed training data; it does not provide inference.
-/// The executive layer remains responsible for validated Windows actions and verification.
+/// InternetTrainingService supplies openly licensed training data; KnowledgeMemory retrieves
+/// relevant local passages; the executive layer remains responsible for validated Windows actions.
 /// </summary>
 internal sealed class AiBrain : IDisposable
 {
     private readonly NativeTransformerBrain _neural;
     private readonly InternetTrainingService _internetTraining;
+    private readonly KnowledgeMemory _knowledge;
     private readonly object _sync = new();
     private readonly List<(string User, string Assistant)> _history = new();
     private BrainDecision? _last;
@@ -17,7 +18,7 @@ internal sealed class AiBrain : IDisposable
     private int _internetTrainingRunning;
 
     public OperationalMemory Memory { get; }
-    public string Model => "LUNA-NATIVE-TRANSFORMER-0.3-FULL-BACKPROP";
+    public string Model => "LUNA-NATIVE-TRANSFORMER-0.4-KNOWLEDGE-RETRIEVAL";
     public BrainDecision? LastDecision => _last;
     public bool IsReady => !_disposed;
     public int ParameterCount => _neural.ParameterCount;
@@ -29,6 +30,7 @@ internal sealed class AiBrain : IDisposable
         Memory = new OperationalMemory();
         _neural = new NativeTransformerBrain(data);
         _internetTraining = new InternetTrainingService(data);
+        _knowledge = new KnowledgeMemory(data);
         if (!_neural.IsTrained)
             _neural.Train(SeedCorpus, epochs: 1, learningRate: 0.0008f);
     }
@@ -45,8 +47,6 @@ internal sealed class AiBrain : IDisposable
         var input = text.Trim();
         var lower = input.ToLowerInvariant();
 
-        // Status/knowledge questions must be handled before the training-command detector.
-        // They must never start a new training run merely because the user asks what happened.
         if (IsTrainingStatusQuestion(lower))
             return Task.FromResult<BrainDecision?>(CreateTrainingStatusDecision(input));
 
@@ -171,11 +171,29 @@ internal sealed class AiBrain : IDisposable
         if (lower.Contains("obrigado") || lower.Contains("obrigada")) return "Por nada. Vamos continuar.";
         if (lower.Contains("teste") || lower.Contains("testando")) return "Teste recebido. Meu cérebro neural nativo está respondendo.";
 
+        var knowledgeContext = _knowledge.BuildContext(input, 2400);
+        if (!string.IsNullOrWhiteSpace(knowledgeContext))
+        {
+            var prompt = "Use somente o contexto local abaixo para responder à pergunta. Se o contexto não responder, diga que não encontrou informação suficiente. Não invente fatos.\nContexto:\n" + knowledgeContext + "\nPergunta: " + input + "\nResposta:";
+            var generatedWithContext = _neural.Generate(prompt, 180, 0.45f);
+            if (IsUsableGeneratedText(generatedWithContext))
+                return generatedWithContext.Replace("LUNA:", "", StringComparison.Ordinal).Trim();
+
+            var best = _knowledge.Search(input, 3);
+            if (best.Count > 0)
+            {
+                var sb = new System.Text.StringBuilder("Encontrei estas informações no meu conhecimento local:\n");
+                foreach (var match in best.Take(2))
+                    sb.AppendLine("• " + match.Text);
+                return sb.ToString().Trim();
+            }
+        }
+
         var generated = _neural.Generate("LUNA: " + input + "\nLUNA:", 180, 0.55f);
         if (IsUsableGeneratedText(generated))
             return generated.Replace("LUNA:", "", StringComparison.Ordinal).Trim();
 
-        return "Entendi a mensagem. Posso observar o computador, planejar uma tarefa, executar ações permitidas e verificar o resultado.";
+        return "Entendi a mensagem. Posso observar o computador, consultar meu conhecimento local, planejar uma tarefa, executar ações permitidas e verificar o resultado.";
     }
 
     private static bool IsUsableGeneratedText(string text)
