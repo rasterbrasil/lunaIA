@@ -1,12 +1,15 @@
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Windows.Forms;
 
 namespace LunaPC;
 
 /// <summary>
-/// Camada de percepção da LUNA. Apenas observa o computador; não executa ações.
+/// Camada de percepção da LUNA. Observa o computador sem executar ações.
 /// </summary>
 internal sealed class Perception : IDisposable
 {
@@ -41,7 +44,8 @@ internal sealed class Perception : IDisposable
             string process = "desconhecido";
             try { process = Process.GetProcessById((int)pid).ProcessName; } catch { }
             GetWindowRect(hWnd, out var r);
-            windows.Add(new WindowSnapshot(title, process, pid, r.Left, r.Top, Math.Max(0, r.Right - r.Left), Math.Max(0, r.Bottom - r.Top)));
+            windows.Add(new WindowSnapshot(title, process, pid, r.Left, r.Top,
+                Math.Max(0, r.Right - r.Left), Math.Max(0, r.Bottom - r.Top)));
             return true;
         }, IntPtr.Zero);
 
@@ -73,6 +77,26 @@ internal sealed class Perception : IDisposable
     {
         var snapshot = Capture();
         return JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>Captura a área de trabalho virtual inteira e salva em PNG.</summary>
+    public string CaptureDesktopScreenshot(string? outputPath = null)
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(Perception));
+
+        var bounds = SystemInformation.VirtualScreen;
+        outputPath ??= Path.Combine(Path.GetTempPath(), $"luna-screen-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
+        outputPath = Path.GetFullPath(outputPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+
+        using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size,
+                CopyPixelOperation.SourceCopy);
+        }
+        bitmap.Save(outputPath, ImageFormat.Png);
+        return outputPath;
     }
 
     public string ReadTextFile(string path, int maxCharacters = 50000)
